@@ -1,0 +1,14 @@
+[project]
+name = "organizational-wiki-intelligence-doc-linker"
+version = "0.1.0"
+description = "Stage 3 document linking and retrieval service for Organizational Wiki Intelligence"
+requires-python = ">=3.11,<3.13"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

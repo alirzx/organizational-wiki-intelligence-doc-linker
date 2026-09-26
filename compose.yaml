@@ -1,0 +1,127 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        INSTALL_MODELS: ${INSTALL_MODELS:-true}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    image: ${DOC_LINKER_IMAGE:-wiki-hami-doc-linker:0.1.0}
+    env_file:
+      - .env
+    environment:
+      DOC_LINKER_EMBEDDING_BACKEND: http
+      DOC_LINKER_RERANKER_BACKEND: http
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8090 --workers 1
+    ports:
+      - "${DOC_LINKER_API_PORT:-8090}:8090"
+    volumes:
+      - doc_linker_hf_cache:/var/lib/doc-linker/cache/huggingface
+    depends_on:
+      model-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [wikio]
+
+  worker:
+    image: ${DOC_LINKER_IMAGE:-wiki-hami-doc-linker:0.1.0}
+    env_file:
+      - .env
+    environment:
+      DOC_LINKER_EMBEDDING_BACKEND: http
+      DOC_LINKER_RERANKER_BACKEND: http
+    command: celery -A app.jobs:celery_app worker --loglevel=INFO --concurrency=1 -Q ${DOC_LINKER_CELERY_QUEUE:-wiki_hami_doc_linker}
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.jobs:celery_app inspect ping -d celery@$$HOSTNAME --timeout=5 2>/dev/null | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - doc_linker_hf_cache:/var/lib/doc-linker/cache/huggingface
+    depends_on:
+      model-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [wikio]
+
+  model-cache:
+    image: ${DOC_LINKER_IMAGE:-wiki-hami-doc-linker:0.1.0}
+    env_file:
+      - .env
+    environment:
+      DOC_LINKER_EMBEDDING_BACKEND: bge
+      DOC_LINKER_RERANKER_BACKEND: bge
+    command: python scripts/prefetch_models.py
+    healthcheck:
+      disable: true
+    volumes:
+      - doc_linker_hf_cache:/var/lib/doc-linker/cache/huggingface
+    restart: "no"
+    networks: [wikio]
+
+  model-service:
+    image: ${DOC_LINKER_IMAGE:-wiki-hami-doc-linker:0.1.0}
+    env_file:
+      - .env
+    environment:
+      DOC_LINKER_EMBEDDING_BACKEND: bge
+      DOC_LINKER_RERANKER_BACKEND: bge
+    command: uvicorn app.model_server:app --host 0.0.0.0 --port 8091 --workers 1
+    volumes:
+      - doc_linker_hf_cache:/var/lib/doc-linker/cache/huggingface
+    depends_on:
+      model-cache:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8091/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks: [wikio]
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: doc-linker-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - doc_linker_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks: [wikio]
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    container_name: doc-linker-qdrant
+    volumes:
+      - doc_linker_qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [wikio]
+
+volumes:
+  doc_linker_hf_cache:
+  doc_linker_qdrant:
+  doc_linker_redis:
+
+networks:
+  wikio:
+    external: true
+    name: wikio
