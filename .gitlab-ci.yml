@@ -14,7 +14,7 @@ deploy:
     - scp -P "$SSH_PORT" "$ENV_FILE" "$SSH_USER@$VM_IPADDRESS:/opt/apps/organizational-wiki/ai-doc/.env"
     - ssh $SSH_USER@$VM_IPADDRESS -p ${SSH_PORT} "cd /opt/apps/organizational-wiki/ai-doc && git pull origin master && docker compose up --build -d"
   only:
-    - main
+    - master
   tags:
     - linux
     - bina
