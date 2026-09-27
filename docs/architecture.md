@@ -6,10 +6,10 @@
 Backend receives Stage-2 completion
   -> POST /api/v1/documents/index-ready
   -> validate request + live MinIO object
-  -> Redis idempotency reservation
+  -> shared Redis idempotency reservation
   -> HTTP 202
-  -> Celery queue
-  -> worker document lock
+  -> Celery queue on shared Redis
+  -> worker document lock in shared Redis
   -> optional Stage-2 manifest validation
   -> verified MinIO download (ETag/SHA/size + mutation check)
   -> artifact adapter
@@ -28,7 +28,7 @@ Backend receives Stage-2 completion
        dense vectors
        learned lexical sparse vectors
   -> deterministic point IDs
-  -> Qdrant upsert
+  -> dedicated Qdrant upsert
   -> remove obsolete points from same version
   -> verify new version point count
   -> optionally remove older versions
@@ -42,7 +42,7 @@ Backend receives Stage-2 completion
 POST /api/v1/search
   -> validate organization_id + wiki_id + optional filters
   -> BGE-M3 query encoding
-  -> Qdrant
+  -> dedicated Qdrant
        dense prefetch
        sparse prefetch
        RRF fusion
@@ -56,9 +56,9 @@ Qdrant hybrid search uses the Query API with dense/sparse prefetch and RRF. The 
 
 ## Canonical source precedence
 
-1. `Sectioning/.../sections.json` — preferred.
-2. `Sectioning/.../sections.docx` — compatibility fallback.
-3. `Sectioning/.../sections.md` — compatibility fallback.
+1. `Sectioning/.../sections.json` — preferred; contains full Stage-2 text plus section/page/source-block/classifier provenance.
+2. `Sectioning/.../sections.docx` — compatibility fallback; full rendered text plus embedded images, which Stage 3 excludes from the text vector index.
+3. `Sectioning/.../sections.md` — compatibility fallback; full rendered text plus Base64 images, which Stage 3 strips before text processing.
 
 JSON avoids reverse-engineering structure already produced by Stage 2. DOCX and Markdown cannot recover all page/source-block/classifier provenance and therefore return weaker references.
 
@@ -66,20 +66,22 @@ JSON avoids reverse-engineering structure already produced by Stage 2. DOCX and 
 
 Point IDs are deterministic from tenant, document/version, section, chunk index and content hash. The worker writes a new revision first, removes same-version stale chunks, verifies the expected count, and only then removes older versions when requested.
 
-API job identity also includes document generation, pipeline version, chunker version, embedding model and artifact fingerprint. A successful delete increments the document generation in Redis. This permits safe re-indexing of the same artifact/version after deletion while keeping duplicate Stage-2 callbacks idempotent.
+API job identity also includes document generation, pipeline version, chunker version, embedding model and artifact fingerprint. A successful delete increments the document generation in shared Redis. This permits safe re-indexing of the same artifact/version after deletion while keeping duplicate Stage-2 callbacks idempotent.
 
 ## Model ownership
 
 The root Compose file has two mutually exclusive profiles: `model-service-cpu` and `model-service-gpu`. Only one should run. Both use the network alias `model-service`. API and worker call that alias over the internal `wikio` network. The one-shot `model-cache` service uses Hugging Face `snapshot_download` to populate the persistent cache without loading model weights. The selected model-service then warms BGE-M3 and the reranker exactly once.
 
-## Storage ownership
+## Storage/service ownership
 
 ```text
-MinIO media/documents/{id}/Sectioning/...  read-only to Stage 3
-MinIO media/documents/{id}/Linking/...     Stage 3 audit outputs
-Qdrant wiki_chunks_v1                       live retrieval index
-Redis                                       jobs, locks, idempotency/generation
+Shared MinIO media/documents/{id}/Sectioning/...  read-only to Stage 3
+Shared MinIO media/documents/{id}/Linking/...     Stage 3 audit outputs
+Shared Redis on wikio                              broker/results + jobs/locks/idempotency/generation
+Dedicated Qdrant wiki_chunks_v1                    live retrieval index
 ```
+
+Redis is external infrastructure reused by multiple Wiki Hami services. Stage 3 uses separate Redis logical DBs but does not own a Redis container. Qdrant is Stage-3-owned, persistent and shared concurrently by the API/search path and Celery indexing/deletion path.
 
 ## Security boundaries
 

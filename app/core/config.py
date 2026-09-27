@@ -32,16 +32,18 @@ class Settings(BaseSettings):
     max_artifact_bytes: int = Field(default=100 * 1024 * 1024, ge=1024)
     write_audit_artifacts: bool = True
 
-    redis_url: str = "redis://localhost:6379/0"
-    celery_broker_url: str | None = None
-    celery_result_backend: str | None = None
+    # Shared Redis service on the external Wiki Hami network. Keep Celery
+    # broker/results and Stage-3 durable job state in separate logical DBs.
+    redis_url: str = "redis://redis:6379/5"
+    celery_broker_url: str | None = "redis://redis:6379/3"
+    celery_result_backend: str | None = "redis://redis:6379/4"
     celery_queue: str = "wiki_hami_doc_linker"
     job_ttl_seconds: int = Field(default=604800, ge=300)
     lock_ttl_seconds: int = Field(default=3600, ge=30)
     task_max_retries: int = Field(default=3, ge=0)
     task_retry_backoff_seconds: int = Field(default=3, ge=1)
 
-    qdrant_url: str = "http://localhost:6333"
+    qdrant_url: str = "http://doc-linker-qdrant:6333"
     qdrant_api_key: str | None = None
     qdrant_collection: str = "wiki_chunks_v1"
     qdrant_dense_vector_name: str = "dense"

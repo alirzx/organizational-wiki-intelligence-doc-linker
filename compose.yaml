@@ -27,8 +27,6 @@ services:
     depends_on:
       model-cache:
         condition: service_completed_successfully
-      doc-linker-redis:
-        condition: service_healthy
       doc-linker-qdrant:
         condition: service_healthy
     healthcheck:
@@ -51,8 +49,6 @@ services:
     depends_on:
       model-cache:
         condition: service_completed_successfully
-      doc-linker-redis:
-        condition: service_healthy
       doc-linker-qdrant:
         condition: service_healthy
     healthcheck:
@@ -129,22 +125,6 @@ services:
         aliases:
           - model-service
 
-  doc-linker-redis:
-    image: ${DOC_LINKER_REDIS_IMAGE:-redis:7.4-alpine}
-    command: redis-server --appendonly yes
-    volumes:
-      - doc_linker_redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-    networks:
-      wikio:
-        aliases:
-          - doc-linker-redis
-
   doc-linker-qdrant:
     image: ${DOC_LINKER_QDRANT_IMAGE:-qdrant/qdrant:v1.19.1}
     volumes:
@@ -164,7 +144,6 @@ services:
 volumes:
   doc_linker_hf_cache:
   doc_linker_qdrant:
-  doc_linker_redis:
 
 networks:
   wikio:

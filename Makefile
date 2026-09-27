@@ -54,7 +54,7 @@ ps:
 	docker compose ps
 
 logs:
-	docker compose logs -f api worker model-service-cpu model-service-gpu doc-linker-qdrant doc-linker-redis
+	docker compose logs -f api worker model-service-cpu model-service-gpu doc-linker-qdrant
 
 health:
 	curl -fsS http://localhost:$${DOC_LINKER_API_PORT:-8090}/health/ready
