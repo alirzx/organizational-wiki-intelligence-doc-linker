@@ -63,7 +63,7 @@ services:
     image: ${DOC_LINKER_IMAGE:-wiki-hami-doc-linker:0.1.0}
     env_file:
       - .env
-    command: python scripts/prefetch_models.py
+    command: python -m scripts.prefetch_models
     volumes:
       - doc_linker_hf_cache:/var/lib/doc-linker/cache/huggingface
     restart: "no"

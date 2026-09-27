@@ -15,7 +15,7 @@ install-models: install
 	$(PYTHON) -m pip install -r requirements-models.txt
 
 prefetch-models:
-	$(PYTHON) scripts/prefetch_models.py
+	$(PYTHON) -m scripts.prefetch_models
 
 test:
 	$(PYTHON) -m pytest -q
