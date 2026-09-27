@@ -4,7 +4,6 @@ import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
-
 import httpx
 
 from app.api.schemas import (
@@ -57,9 +56,14 @@ def index_ready(
         raise HTTPException(status_code=404, detail={"code": "artifact-not-found", "message": "Stage-2 artifact is not available"}) from exc
     if request.artifact.etag and request.artifact.etag.strip('"') != (live_artifact.etag or ""):
         raise HTTPException(status_code=409, detail={"code": "artifact-version-mismatch", "message": "Artifact ETag changed"})
+    generation = jobs.document_generation(
+        request.organization_id, request.wiki_id, request.document_id
+    )
     identity_seed = "|".join([
         request.organization_id, request.wiki_id, request.document_id, request.document_version,
-        request.artifact.object_key, request.artifact.sha256 or live_artifact.etag or "unknown",
+        str(generation), settings.pipeline_version, settings.chunker_version,
+        settings.embedding_model, request.artifact.object_key,
+        request.artifact.sha256 or live_artifact.etag or "unknown",
     ])
     identity = "index:" + hashlib.sha256(identity_seed.encode()).hexdigest()
     try:

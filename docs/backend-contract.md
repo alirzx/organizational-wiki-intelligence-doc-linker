@@ -1,11 +1,12 @@
-# Backend contract
+# Stage 3 API contract
 
-All protected endpoints accept either `X-API-Key: <token>` or `Authorization: Bearer <token>`.
-The service never accepts an arbitrary callback URL from requests; callback destination is deployment configuration.
+Base path: `/api/v1`.
+
+Protected endpoints accept either `X-API-Key: <DOC_LINKER_API_AUTH_TOKEN>` or `Authorization: Bearer <DOC_LINKER_API_AUTH_TOKEN>`. The service never accepts arbitrary MinIO endpoints or Backend callback URLs in requests.
 
 ## Index a completed Stage-2 artifact
 
-`POST /api/v1/documents/index-ready` returns HTTP 202.
+`POST /api/v1/documents/index-ready` returns HTTP `202` after request/artifact validation and durable Redis job reservation. It does not wait for chunking, embedding or Qdrant.
 
 ```json
 {
@@ -16,13 +17,16 @@ The service never accepts an arbitrary callback URL from requests; callback dest
   "artifact": {
     "bucket": "media",
     "object_key": "documents/59/Sectioning/ocr/sections.json",
+    "uri": "s3://media/documents/59/Sectioning/ocr/sections.json",
     "content_type": "application/json",
-    "etag": "optional",
-    "sha256": "optional-64-hex"
+    "etag": null,
+    "sha256": null
   },
   "manifest": {
     "bucket": "media",
-    "object_key": "documents/59/Sectioning/ocr/manifest.json"
+    "object_key": "documents/59/Sectioning/ocr/manifest.json",
+    "etag": null,
+    "sha256": null
   },
   "document": {
     "title": "Document title",
@@ -37,42 +41,59 @@ The service never accepts an arbitrary callback URL from requests; callback dest
 }
 ```
 
-The preferred artifact is `sections.json`; DOCX and Markdown are accepted fallback adapters.
-If `manifest` is supplied, Stage 3 requires `status=succeeded` and verifies that the requested artifact appears in its outputs.
+Rules: bucket must be the configured Wiki bucket; key must be under `documents/{document_id}/Sectioning/`; accepted artifacts are `sections.json`, `sections.docx`, `sections.md`; optional `uri` must match bucket/key exactly; optional manifest must be sibling `manifest.json`, have `status=succeeded`, match document ID and list the artifact. `sections.json` is preferred. `replace_existing=true` removes older versions only after the new version is verified.
 
 Response:
+
 ```json
 {"job_id":"...","status":"queued","start_time":"..."}
 ```
 
 ## Job status
-`GET /api/v1/jobs/{job_id}` returns queued/downloading/parsing/chunking/embedding/indexing/verifying/retrying/succeeded/failed.
+
+`GET /api/v1/jobs/{job_id}`. Index statuses include `queued`, `downloading`, `parsing`, `chunking`, `embedding`, `indexing`, `verifying`, `retrying`, `succeeded`, `failed`. Delete additionally uses `deleting`.
 
 ## Search
-`POST /api/v1/search` is synchronous. `organization_id` and `wiki_id` are mandatory tenant boundaries.
-The default final limit is 5; retrieval first fetches a larger candidate pool and reranks it.
 
-## Delete
-`DELETE /api/v1/documents/{document_id}` with JSON body:
-```json
-{"organization_id":"org-1","wiki_id":"wiki-main","document_version":null}
-```
-Omit version to remove all embeddings for the document. This is an async job and returns 202.
+`POST /api/v1/search`
 
-## Callback
-On successful indexing the configured Backend callback receives:
 ```json
 {
-  "event":"document-linking-indexed",
-  "status":"succeeded",
-  "job_id":"...",
-  "document_id":"59",
-  "result":{
-    "collection":"wiki_chunks_v1",
-    "chunk_count":12,
-    "deleted_stale_points":8,
-    "audit_outputs":["..."]
+  "query": "مسئولیت‌های تیم امنیت چیست؟",
+  "organization_id": "org-1",
+  "wiki_id": "wiki-main",
+  "limit": 5,
+  "candidate_limit": 40,
+  "mode": "hybrid",
+  "filters": {
+    "document_ids": [],
+    "section_type_ids": [],
+    "tags": ["policy"],
+    "language": "fa",
+    "visibility": ["internal"],
+    "acl_groups": ["security-team"]
   }
 }
 ```
-A callback delivery failure does not roll back an already successful Qdrant index operation; job state exposes `callback_delivered` and `callback_error`.
+
+`organization_id` and `wiki_id` are mandatory. Mode is `dense` or `hybrid`. Default final limit is 5 and configured maximum is 20. Each result contains scores, text, document/version/title/source filename, section identity/type/order/classifier/confidence, inherited page range/source blocks, chunk index, artifact key/hash and document metadata, plus timing fields.
+
+## Delete document embeddings
+
+`DELETE /api/v1/documents/{document_id}` body:
+
+```json
+{"organization_id":"org-1","wiki_id":"wiki-main","document_version":null,"request_id":"optional-backend-event-id"}
+```
+
+Null version deletes all indexed versions; a version deletes only that version. `request_id` is recommended for idempotent Backend retries. Operation is asynchronous and returns HTTP `202`.
+
+## Health
+
+`GET /health/live` and `GET /health/ready`. Readiness checks MinIO, Redis, Qdrant and the selected internal model-service.
+
+## Callback contract
+
+Callback URL/token are deployment configuration. Callback failure never rolls back a verified Qdrant operation; job state exposes `callback_delivered` and `callback_error`.
+
+Index success uses event `document-linking-indexed`, status `succeeded`, `job_id`, `document_id` and a `result` object containing collection, chunk count, deleted stale points, artifact SHA256, audit outputs/error and timings. Index failure uses `document-linking-failed`. Delete success uses `document-linking-deleted`; delete failure uses `document-linking-delete-failed`.

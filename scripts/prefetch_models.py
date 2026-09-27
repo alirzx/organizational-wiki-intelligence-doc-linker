@@ -1,30 +1,26 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+from huggingface_hub import snapshot_download
+
 from app.core.config import get_settings
-from app.models.embedding import build_embedder
-from app.models.reranker import build_reranker
+
+
+def _download(model_id: str, cache_dir: str) -> None:
+    print(f"Caching model: {model_id}")
+    snapshot_download(repo_id=model_id, cache_dir=cache_dir)
 
 
 def main() -> None:
     settings = get_settings()
-    embedder = build_embedder(settings)
-    print(f"Prefetching embedding model: {settings.embedding_model}")
-    embedder.encode_documents(["Wiki Hami model cache warmup."])
-    # This process exists to fill the shared disk cache, not retain model memory.
-    del embedder
-    import gc
-    gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
+    cache_dir = os.getenv("HF_HOME") or "/var/lib/doc-linker/cache/huggingface"
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    _download(settings.embedding_model, cache_dir)
     if settings.reranker_backend != "none":
-        reranker = build_reranker(settings)
-        print(f"Prefetching reranker: {settings.reranker_model}")
-        reranker.score("warmup", ["warmup passage"])
-    print("Model cache ready")
+        _download(settings.reranker_model, cache_dir)
+    print(f"Model cache ready: {cache_dir}")
 
 
 if __name__ == "__main__":

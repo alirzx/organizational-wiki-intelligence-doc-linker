@@ -1,0 +1,53 @@
+stages:
+  - test
+  - deploy
+
+variables:
+  DOC_LINKER_DEPLOY_PATH: "/opt/apps/organizational-wiki/ai-doc-linker"
+
+unit-test:
+  stage: test
+  before_script:
+    - python3 -m venv .ci-venv
+    - . .ci-venv/bin/activate
+    - python -m pip install --upgrade pip
+    - python -m pip install -r requirements-dev.txt
+  script:
+    - . .ci-venv/bin/activate
+    - python -m pytest -q
+    - python -m ruff check app tests scripts
+  after_script:
+    - rm -rf .ci-venv
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+  tags:
+    - linux
+    - bina
+    - shell
+
+deploy:
+  stage: deploy
+  before_script:
+    - command -v ssh-agent >/dev/null
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -p "$SSH_PORT" "$VM_IPADDRESS" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - test -n "$ENV_FILE"
+    - scp -P "$SSH_PORT" "$ENV_FILE" "$SSH_USER@$VM_IPADDRESS:$DOC_LINKER_DEPLOY_PATH/.env"
+    - >-
+      ssh -p "$SSH_PORT" "$SSH_USER@$VM_IPADDRESS"
+      "cd '$DOC_LINKER_DEPLOY_PATH'
+      && git pull --ff-only origin master
+      && docker compose config >/dev/null
+      && docker compose up -d --build --remove-orphans
+      && docker compose ps"
+  only:
+    - master
+  tags:
+    - linux
+    - bina
+    - shell

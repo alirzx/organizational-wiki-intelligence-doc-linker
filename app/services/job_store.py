@@ -25,11 +25,26 @@ class JobStore:
     def _identity_key(self, identity: str) -> str:
         return f"doc-linker:identity:{identity}"
 
+    def _generation_key(self, organization_id: str, wiki_id: str, document_id: str) -> str:
+        return f"doc-linker:generation:{organization_id}:{wiki_id}:{document_id}"
+
     def healthcheck(self) -> bool:
         try:
             return bool(self.redis.ping())
         except Exception:
             return False
+
+    def document_generation(self, organization_id: str, wiki_id: str, document_id: str) -> int:
+        raw = self.redis.get(self._generation_key(organization_id, wiki_id, document_id))
+        return int(raw or 0)
+
+    def bump_document_generation(self, organization_id: str, wiki_id: str, document_id: str) -> int:
+        key = self._generation_key(organization_id, wiki_id, document_id)
+        with self.redis.pipeline() as pipe:
+            pipe.incr(key)
+            pipe.expire(key, self.settings.job_ttl_seconds)
+            generation, _ = pipe.execute()
+        return int(generation)
 
     def create_or_get(self, *, operation: str, identity: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         identity_key = self._identity_key(identity)
@@ -62,7 +77,6 @@ class JobStore:
                     pipe.execute()
                     return job, True
                 except redis.WatchError:
-                    # Another API process reserved the same idempotency identity first.
                     continue
 
     def get(self, job_id: str) -> dict[str, Any] | None:

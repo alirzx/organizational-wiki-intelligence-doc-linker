@@ -38,7 +38,8 @@ class DeleteService:
             logger.exception("Could not write delete failure audit")
         delivered, callback_error = self.callbacks.send({
             "event": "document-linking-delete-failed", "status": "failed",
-            "job_id": job_id, "document_id": p["document_id"], "error": error,
+            "job_id": job_id, "document_id": p["document_id"],
+            "document_version": p.get("document_version"), "error": error,
         })
         return self.jobs.update(job_id, callback_delivered=delivered, callback_error=callback_error)
 
@@ -57,10 +58,14 @@ class DeleteService:
             deleted = self.vector.delete_document(
                 p["organization_id"], p["wiki_id"], p["document_id"], p.get("document_version")
             )
+            generation = self.jobs.bump_document_generation(
+                p["organization_id"], p["wiki_id"], p["document_id"]
+            )
             result = {
                 "document_id": p["document_id"], "document_version": p.get("document_version"),
                 "organization_id": p["organization_id"], "wiki_id": p["wiki_id"],
-                "deleted_points": deleted, "duration_seconds": round(time.perf_counter() - started, 6),
+                "deleted_points": deleted, "document_generation": generation,
+                "duration_seconds": round(time.perf_counter() - started, 6),
             }
             root = f"{self.settings.document_prefix}/{p['document_id']}/{self.settings.linking_dir}"
             try:
@@ -73,7 +78,8 @@ class DeleteService:
             self.jobs.update(job_id, status="succeeded", result=result, error=None, completed_time=utc_now())
             delivered, error = self.callbacks.send({
                 "event": "document-linking-deleted", "status": "succeeded", "job_id": job_id,
-                "document_id": p["document_id"], "result": result,
+                "document_id": p["document_id"],
+                "document_version": p.get("document_version"), "result": result,
             })
             return self.jobs.update(job_id, callback_delivered=delivered, callback_error=error)
         except Exception:

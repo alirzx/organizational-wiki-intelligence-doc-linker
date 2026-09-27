@@ -1,40 +1,90 @@
 # Stage 3 architecture
 
-```text
-Backend Stage-2 completion
-  -> POST /documents/index-ready
-  -> Redis durable job + Celery
-  -> worker downloads Stage-2 artifact from shared MinIO
-  -> adapter (sections.json preferred, DOCX/Markdown fallback)
-  -> CanonicalDocument
-  -> section-preserving semantic chunker
-  -> BGE-M3 dense + lexical sparse vectors
-  -> Qdrant wiki_chunks_v1
-  -> MinIO documents/{id}/Linking audit artifacts
-  -> Backend callback
+## End-to-end indexing
 
-User query
-  -> POST /search
-  -> BGE-M3 query dense+sparse
-  -> Qdrant RRF hybrid candidate retrieval
-  -> BGE-reranker-v2-m3 cross-encoder
-  -> top N chunks with document/section/page/source-block references
+```text
+Backend receives Stage-2 completion
+  -> POST /api/v1/documents/index-ready
+  -> validate request + live MinIO object
+  -> Redis idempotency reservation
+  -> HTTP 202
+  -> Celery queue
+  -> worker document lock
+  -> optional Stage-2 manifest validation
+  -> verified MinIO download (ETag/SHA/size + mutation check)
+  -> artifact adapter
+       sections.json  -> full Stage-2 provenance
+       sections.docx  -> heading/text fallback
+       sections.md    -> heading/text fallback, Base64 image stripping
+  -> CanonicalDocument
+  -> cleaning/normalization
+  -> section-preserving semantic chunking
+       paragraphs/sentences
+       exact BGE tokenizer counts
+       adjacent-unit BGE similarity
+       target/max/min token bounds
+       overlap
+  -> BGE-M3 document encoding
+       dense vectors
+       learned lexical sparse vectors
+  -> deterministic point IDs
+  -> Qdrant upsert
+  -> remove obsolete points from same version
+  -> verify new version point count
+  -> optionally remove older versions
+  -> MinIO Linking audit artifacts
+  -> Backend callback
 ```
 
+## Retrieval
+
+```text
+POST /api/v1/search
+  -> validate organization_id + wiki_id + optional filters
+  -> BGE-M3 query encoding
+  -> Qdrant
+       dense prefetch
+       sparse prefetch
+       RRF fusion
+  -> default 40 candidates
+  -> BGE-reranker-v2-m3 pair scoring
+  -> final default 5 results
+  -> references + timings
+```
+
+Qdrant hybrid search uses the Query API with dense/sparse prefetch and RRF. The collection is shared by all wiki documents; organization/wiki/document identity live in payload fields and payload indexes.
+
 ## Canonical source precedence
-1. `Sectioning/ocr/sections.json`
-2. `Sectioning/ocr/sections.docx`
-3. `Sectioning/ocr/sections.md`
 
-JSON preserves Stage-2 provenance and avoids parsing embedded Base64 images. DOCX/Markdown are compatibility adapters and cannot recover all Stage-2 page/source-block metadata.
+1. `Sectioning/.../sections.json` — preferred.
+2. `Sectioning/.../sections.docx` — compatibility fallback.
+3. `Sectioning/.../sections.md` — compatibility fallback.
 
-## Incremental wiki behavior
-Every document shares one Qdrant collection. New documents are upserted into that collection; there is no vector-file merge operation. Tenant and document identity are payload fields and indexed filters.
+JSON avoids reverse-engineering structure already produced by Stage 2. DOCX and Markdown cannot recover all page/source-block/classifier provenance and therefore return weaker references.
 
-## Replacement safety
-New-version points are written and verified first. Obsolete chunks from the same version are removed, then older document versions are removed when `replace_existing=true`. This preserves the old searchable document if embedding/upsert fails before the new version is ready.
+## Replacement and idempotency
 
-## Model service and cache
-Production Compose uses one private `model-service` process as the sole owner of BGE-M3 and the reranker in memory. API and Celery worker call it over the internal Docker network. A one-shot `model-cache` service prefetches both models into the shared Hugging Face volume before `model-service` starts. API/worker load only the BGE tokenizer locally for exact chunk token accounting, so Persian and mixed-language chunks are not sized with character-count heuristics.
+Point IDs are deterministic from tenant, document/version, section, chunk index and content hash. The worker writes a new revision first, removes same-version stale chunks, verifies the expected count, and only then removes older versions when requested.
 
-Direct `bge` mode is still available for local development or single-process deployments, but it should not be used simultaneously in API and worker on a constrained GPU.
+API job identity also includes document generation, pipeline version, chunker version, embedding model and artifact fingerprint. A successful delete increments the document generation in Redis. This permits safe re-indexing of the same artifact/version after deletion while keeping duplicate Stage-2 callbacks idempotent.
+
+## Model ownership
+
+The root Compose file has two mutually exclusive profiles: `model-service-cpu` and `model-service-gpu`. Only one should run. Both use the network alias `model-service`. API and worker call that alias over the internal `wikio` network. The one-shot `model-cache` service uses Hugging Face `snapshot_download` to populate the persistent cache without loading model weights. The selected model-service then warms BGE-M3 and the reranker exactly once.
+
+## Storage ownership
+
+```text
+MinIO media/documents/{id}/Sectioning/...  read-only to Stage 3
+MinIO media/documents/{id}/Linking/...     Stage 3 audit outputs
+Qdrant wiki_chunks_v1                       live retrieval index
+Redis                                       jobs, locks, idempotency/generation
+```
+
+## Security boundaries
+
+- MinIO endpoint and Backend callback URL come only from deployment configuration.
+- Request artifact `uri`, when present, must exactly equal `s3://{bucket}/{object_key}`.
+- Artifact key must be under `documents/{document_id}/Sectioning/` and be one of `sections.json`, `sections.docx`, or `sections.md`.
+- `organization_id` and `wiki_id` are mandatory on every search.
+- ACL/visibility filters are supported, but Backend remains responsible for translating authenticated-user permissions into search filters.
