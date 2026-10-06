@@ -1,3 +1,21 @@
+deploy-stage:
+  stage: deploy
+  before_script:
+    - "command -v sshpass >/dev/null || ( apk add --update openssh sshpass || apt-get update && apt-get install -y sshpass openssh-client )"
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -p "$STAGE_PORT" "$STAGE_VM_IPADDRESS" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - echo "$STAGE_SSH_USER"
+    - sshpass -p "$STAGE_SSH_PASSWORD" scp -P "$STAGE_PORT" "$STAGE_ENV_FILE" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS:/opt/apps/organizational-wiki/ai-doc/.env"
+    - sshpass -p "$STAGE_SSH_PASSWORD" ssh -p "$STAGE_PORT" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS" "cd /opt/apps/organizational-wiki/ai-doc && git pull origin stage && docker compose up --build -d"
+  only:
+    - stage
+  tags:
+    - linux
+    - bina
+    - shell
 deploy:
   stage: deploy
   before_script:
