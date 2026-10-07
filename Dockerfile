@@ -4,9 +4,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_HOME=/var/lib/doc-linker/cache/huggingface \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=60 \
+    PIP_INDEX_URL=https://pypi.iranserver.com/repository/pypi/simple \
+    PIP_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_TRUSTED_HOST="pypi.iranserver.com mirrors.aliyun.com"
+
 
 WORKDIR /app
+
+# Prefer IranServer; fall back to Aliyun when a package/version is missing (404).
+RUN printf '%s\n' \
+      '[global]' \
+      'index-url = https://pypi.iranserver.com/repository/pypi/simple' \
+      'extra-index-url = https://mirrors.aliyun.com/pypi/simple' \
+      'trusted-host = pypi.iranserver.com mirrors.aliyun.com' \
+      'timeout = 60' \
+      > /etc/pip.conf
+
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl libgomp1 \
