@@ -4,7 +4,7 @@ import re
 
 from app.artifacts.base import AdapterContext, ArtifactAdapter
 from app.artifacts.cleaning import clean_text
-from app.models.domain import CanonicalDocument, CanonicalSection
+from app.models.domain import CanonicalContent, CanonicalDocument
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
@@ -16,7 +16,7 @@ class MarkdownAdapter(ArtifactAdapter):
         except UnicodeDecodeError as exc:
             raise ValueError("Markdown artifact must be UTF-8") from exc
         raw = clean_text(raw)
-        sections: list[CanonicalSection] = []
+        sections: list[CanonicalContent] = []
         title = "Document"
         buffer: list[str] = []
 
@@ -26,7 +26,13 @@ class MarkdownAdapter(ArtifactAdapter):
             if text:
                 order = len(sections) + 1
                 sections.append(
-                    CanonicalSection(f"section-{order:03d}", None, title, text, order)
+                    CanonicalContent(
+                        content_id=f"section-{order:03d}",
+                        content_type="section",
+                        content_title=title,
+                        text=text,
+                        content_order=order,
+                    )
                 )
             buffer = []
 
@@ -46,6 +52,7 @@ class MarkdownAdapter(ArtifactAdapter):
             language=context.language, tags=context.tags, visibility=context.visibility, acl_groups=context.acl_groups,
             artifact_bucket=context.artifact_bucket, artifact_key=context.artifact_key,
             artifact_sha256=context.artifact_sha256, artifact_etag=context.artifact_etag,
+            source_kind="legacy_stage2", contents=tuple(sections), source_metadata={},
             stage2_job_id=context.stage2_job_id, stage2_pipeline_version=context.stage2_pipeline_version,
-            sections=tuple(sections), metadata=context.extra_metadata or {},
+            metadata=context.extra_metadata or {},
         )

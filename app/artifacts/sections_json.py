@@ -4,7 +4,7 @@ import json
 
 from app.artifacts.base import AdapterContext, ArtifactAdapter
 from app.artifacts.cleaning import clean_text
-from app.models.domain import CanonicalDocument, CanonicalSection
+from app.models.domain import CanonicalContent, CanonicalDocument
 
 
 class SectionsJsonAdapter(ArtifactAdapter):
@@ -14,12 +14,12 @@ class SectionsJsonAdapter(ArtifactAdapter):
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("sections.json must be valid UTF-8 JSON") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("sections"), list):
-            raise ValueError("sections.json must contain a sections array")
+            raise TypeError("sections.json must contain a sections array")
         payload_document_id = payload.get("document-id") or payload.get("document_id")
         if payload_document_id is not None and str(payload_document_id) != context.document_id:
             raise ValueError("sections.json document ID does not match request")
 
-        sections: list[CanonicalSection] = []
+        sections: list[CanonicalContent] = []
         for position, raw in enumerate(payload["sections"], start=1):
             if not isinstance(raw, dict):
                 continue
@@ -33,17 +33,19 @@ class SectionsJsonAdapter(ArtifactAdapter):
                 raw.get("section-id") or raw.get("section_id") or f"section-{position:03d}"
             )
             sections.append(
-                CanonicalSection(
-                    section_id=section_id,
-                    type_id=_as_int(raw.get("type-id", raw.get("type_id"))),
-                    title=clean_text(str(raw.get("title") or section_id)),
+                CanonicalContent(
+                    content_id=section_id,
+                    content_type="section",
+                    content_title=clean_text(str(raw.get("title") or section_id)),
                     text=text,
-                    order=_as_int(raw.get("order")) or position,
+                    content_order=_as_int(raw.get("order")) or position,
+                    source_metadata={},
+                    section_type_id=_as_int(raw.get("type-id", raw.get("type_id"))),
                     page_start=_as_int(raw.get("page-start", raw.get("page_start"))),
                     page_end=_as_int(raw.get("page-end", raw.get("page_end"))),
                     source_blocks=tuple(x for x in (_as_int(v) for v in source_blocks) if x is not None),
-                    confidence=_as_float(raw.get("confidence")),
-                    classifier=str(raw.get("classifier")) if raw.get("classifier") else None,
+                    section_confidence=_as_float(raw.get("confidence")),
+                    section_classifier=str(raw.get("classifier")) if raw.get("classifier") else None,
                 )
             )
         if not sections:
@@ -63,9 +65,11 @@ class SectionsJsonAdapter(ArtifactAdapter):
             artifact_key=context.artifact_key,
             artifact_sha256=context.artifact_sha256,
             artifact_etag=context.artifact_etag,
+            source_kind="legacy_stage2",
+            contents=tuple(sorted(sections, key=lambda item: item.content_order)),
+            source_metadata={},
             stage2_job_id=context.stage2_job_id or _optional_str(payload.get("job-id")),
             stage2_pipeline_version=context.stage2_pipeline_version,
-            sections=tuple(sorted(sections, key=lambda item: item.order)),
             metadata=context.extra_metadata or {},
         )
 

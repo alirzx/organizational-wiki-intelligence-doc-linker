@@ -6,7 +6,7 @@ from docx import Document
 
 from app.artifacts.base import AdapterContext, ArtifactAdapter
 from app.artifacts.cleaning import clean_text
-from app.models.domain import CanonicalDocument, CanonicalSection
+from app.models.domain import CanonicalContent, CanonicalDocument
 
 
 class DocxAdapter(ArtifactAdapter):
@@ -15,7 +15,7 @@ class DocxAdapter(ArtifactAdapter):
             doc = Document(io.BytesIO(data))
         except Exception as exc:
             raise ValueError("Artifact is not a readable DOCX file") from exc
-        sections: list[CanonicalSection] = []
+        sections: list[CanonicalContent] = []
         title = "Document"
         buffer: list[str] = []
 
@@ -25,12 +25,12 @@ class DocxAdapter(ArtifactAdapter):
             if text:
                 order = len(sections) + 1
                 sections.append(
-                    CanonicalSection(
-                        section_id=f"section-{order:03d}",
-                        type_id=None,
-                        title=clean_text(title) or f"Section {order}",
+                    CanonicalContent(
+                        content_id=f"section-{order:03d}",
+                        content_type="section",
+                        content_title=clean_text(title) or f"Section {order}",
                         text=text,
-                        order=order,
+                        content_order=order,
                     )
                 )
             buffer = []
@@ -54,6 +54,7 @@ class DocxAdapter(ArtifactAdapter):
             language=context.language, tags=context.tags, visibility=context.visibility, acl_groups=context.acl_groups,
             artifact_bucket=context.artifact_bucket, artifact_key=context.artifact_key,
             artifact_sha256=context.artifact_sha256, artifact_etag=context.artifact_etag,
+            source_kind="legacy_stage2", contents=tuple(sections), source_metadata={},
             stage2_job_id=context.stage2_job_id, stage2_pipeline_version=context.stage2_pipeline_version,
-            sections=tuple(sections), metadata=context.extra_metadata or {},
+            metadata=context.extra_metadata or {},
         )

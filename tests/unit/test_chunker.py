@@ -1,6 +1,6 @@
 from app.chunking.semantic import SemanticChunker
 from app.core.config import Settings
-from app.models.domain import CanonicalDocument, CanonicalSection
+from app.models.domain import CanonicalContent, CanonicalDocument
 from app.models.embedding import MockEmbeddingService
 
 
@@ -9,8 +9,11 @@ def build_doc(text):
         document_id="d1", organization_id="o1", wiki_id="w1", document_version="1", title="Doc",
         source_filename="x.pdf", language="fa", tags=(), visibility="internal", acl_groups=(),
         artifact_bucket="media", artifact_key="documents/d1/Sectioning/ocr/sections.json",
-        artifact_sha256="d" * 64, artifact_etag=None, stage2_job_id=None, stage2_pipeline_version=None,
-        sections=(CanonicalSection("section-001", 6, "Process", text, 1, 1, 2, (1, 2)),),
+        artifact_sha256="d" * 64, artifact_etag=None, source_kind="published_snapshot",
+        contents=(CanonicalContent(
+            content_id="content-001", content_type="section", content_title="Process",
+            text=text, content_order=1,
+        ),),
     )
 
 
@@ -26,4 +29,4 @@ def test_chunk_ids_are_deterministic():
     assert [x.point_id for x in a] == [x.point_id for x in b]
     assert len(a) > 1
     assert all(x.token_count <= settings.chunk_max_tokens for x in a)
-    assert all(x.section_id == "section-001" for x in a)
+    assert all(x.content_id == "content-001" for x in a)

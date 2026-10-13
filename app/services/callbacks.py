@@ -29,7 +29,7 @@ class CallbackClient:
                 )
                 response.raise_for_status()
                 return True, None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - callback failures are isolated and retried.
                 last_error = str(exc)[:500]
                 logger.warning("Callback attempt %d failed: %s", attempt, last_error)
                 if attempt < self.settings.callback_max_attempts:

@@ -23,7 +23,9 @@ def test_sections_json_preserves_provenance():
     }
     doc = SectionsJsonAdapter().parse(json.dumps(payload, ensure_ascii=False).encode(), ctx())
     section = doc.sections[0]
+    assert doc.source_kind == "legacy_stage2"
     assert doc.stage2_job_id == "stage2-job"
-    assert section.section_id == "section-003"
+    assert section.content_id == "section-003"
+    assert section.content_type == "section"
     assert section.page_start == 5 and section.page_end == 8
     assert section.source_blocks == (41, 42)

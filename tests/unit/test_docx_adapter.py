@@ -1,4 +1,5 @@
 import io
+
 from docx import Document
 
 from app.artifacts.base import AdapterContext

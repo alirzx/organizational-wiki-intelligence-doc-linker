@@ -23,6 +23,8 @@ Other settings: `DOC_LINKER_CELERY_QUEUE`, `DOC_LINKER_JOB_TTL_SECONDS`, `DOC_LI
 
 Qdrant remains owned by Stage 3 as a dedicated server/container with persistent storage. API and worker both access the same Qdrant service over `wikio`; it is not embedded independently into either Python process.
 
+The collection has a keyword payload index for `version_state`. Normal search requires `active`; use `scripts/migrate_active_versions.py` once for pre-lifecycle collections rather than performing a full migration on every startup.
+
 ## Models
 API/worker should use HTTP while the private model-service uses BGE. Variables: `DOC_LINKER_EMBEDDING_BACKEND`, `DOC_LINKER_EMBEDDING_MODEL`, `DOC_LINKER_EMBEDDING_DEVICE`, `DOC_LINKER_EMBEDDING_USE_FP16`, `DOC_LINKER_EMBEDDING_BATCH_SIZE`, `DOC_LINKER_EMBEDDING_MAX_LENGTH`, `DOC_LINKER_ENABLE_SPARSE`, `DOC_LINKER_RERANKER_BACKEND`, `DOC_LINKER_RERANKER_MODEL`, `DOC_LINKER_RERANKER_DEVICE`, `DOC_LINKER_RERANKER_USE_FP16`, `DOC_LINKER_RERANKER_MAX_LENGTH`, `DOC_LINKER_MODEL_SERVICE_URL`, `DOC_LINKER_MODEL_SERVICE_TOKEN`, `DOC_LINKER_MODEL_SERVICE_TIMEOUT_SECONDS`, `DOC_LINKER_MODEL_SERVICE_WARMUP`.
 
@@ -34,3 +36,5 @@ API/worker should use HTTP while the private model-service uses BGE. Variables: 
 
 ## Callback/identity
 `DOC_LINKER_CALLBACK_URL`, `DOC_LINKER_CALLBACK_TOKEN`, `DOC_LINKER_CALLBACK_TIMEOUT_SECONDS`, `DOC_LINKER_CALLBACK_MAX_ATTEMPTS`, `DOC_LINKER_PIPELINE_VERSION`, `DOC_LINKER_CHUNKER_VERSION`.
+
+The accepted MinIO ETag/SHA fingerprint, pipeline/chunker version, embedding model, numeric published version, tenant identity, and Redis document generation participate in index idempotency. There is no configuration switch that permits request-controlled MinIO or callback destinations.

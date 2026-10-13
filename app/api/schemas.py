@@ -31,13 +31,6 @@ class ArtifactRef(BaseModel):
         return self
 
 
-class ManifestRef(BaseModel):
-    bucket: str = "media"
-    object_key: str = Field(min_length=1, max_length=2048)
-    etag: str | None = None
-    sha256: str | None = Field(default=None, pattern=r"^[A-Fa-f0-9]{64}$")
-
-
 class DocumentMetadata(BaseModel):
     title: str = Field(min_length=1, max_length=1000)
     source_filename: str | None = Field(default=None, max_length=1000)
@@ -53,36 +46,40 @@ class IndexReadyRequest(BaseModel):
     document_id: str = Field(min_length=1, max_length=192)
     organization_id: str = Field(min_length=1, max_length=192)
     wiki_id: str = Field(min_length=1, max_length=192)
-    document_version: str = Field(default="1", min_length=1, max_length=192)
+    document_version: str = Field(min_length=1, max_length=192)
     artifact: ArtifactRef
-    manifest: ManifestRef | None = None
     document: DocumentMetadata
     replace_existing: bool = True
 
-    @field_validator("document_id", "organization_id", "wiki_id", "document_version")
+    @field_validator("document_id", "organization_id", "wiki_id")
     @classmethod
     def safe_ids(cls, value: str, info) -> str:
         return validate_safe_id(value, info.field_name)
 
+    @field_validator("document_version")
+    @classmethod
+    def positive_numeric_version(cls, value: str) -> str:
+        if not value.isascii() or not value.isdigit() or value.startswith("0"):
+            raise ValueError("document_version must be a positive decimal integer string")
+        if int(value) <= 0:
+            raise ValueError("document_version must be greater than zero")
+        return value
+
     @model_validator(mode="after")
     def validate_artifact_scope(self):
-        expected = f"documents/{self.document_id}/Sectioning/"
-        if not self.artifact.object_key.startswith(expected):
-            raise ValueError("artifact must be a Stage-2 Sectioning object for document_id")
-        artifact_name = self.artifact.object_key.rsplit("/", 1)[-1].casefold()
-        if artifact_name not in {"sections.json", "sections.docx", "sections.md"}:
-            raise ValueError("artifact must be sections.json, sections.docx, or sections.md")
-        if self.manifest is not None:
-            if self.manifest.bucket != self.artifact.bucket:
-                raise ValueError("manifest and artifact must use the same MinIO bucket")
-            expected_manifest = self.artifact.object_key.rsplit("/", 1)[0] + "/manifest.json"
-            if self.manifest.object_key != expected_manifest:
-                raise ValueError("manifest must be the manifest.json beside the Stage-2 artifact")
+        expected = (
+            f"documents/{self.document_id}/versions/"
+            f"v{self.document_version}/document.json"
+        )
+        if self.artifact.object_key != expected:
+            raise ValueError(f"artifact object_key must be exactly {expected}")
         return self
 
 
 class AcceptedJobResponse(BaseModel):
     job_id: str
+    document_id: str | None = None
+    document_version: str | None = None
     status: str
     start_time: str
 
@@ -121,10 +118,15 @@ class SearchResult(BaseModel):
     document_version: str
     document_title: str
     source_filename: str | None = None
-    section_id: str
+    content_id: str | None = None
+    content_type: str = "content"
+    content_title: str
+    content_order: int
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    section_id: str | None = None
     section_type_id: int | None = None
-    section_title: str
-    section_order: int
+    section_title: str | None = None
+    section_order: int | None = None
     section_confidence: float | None = None
     section_classifier: str | None = None
     page_start: int | None = None

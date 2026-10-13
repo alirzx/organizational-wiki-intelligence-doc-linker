@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import redis
@@ -11,7 +11,7 @@ from app.core.config import Settings
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 class JobStore:
@@ -31,7 +31,7 @@ class JobStore:
     def healthcheck(self) -> bool:
         try:
             return bool(self.redis.ping())
-        except Exception:
+        except Exception:  # noqa: BLE001 - health checks must report false, not raise.
             return False
 
     def document_generation(self, organization_id: str, wiki_id: str, document_id: str) -> int:
@@ -64,6 +64,8 @@ class JobStore:
                     job = {
                         "job_id": job_id, "operation": operation, "status": "queued",
                         "start_time": now, "updated_time": now, "payload": payload,
+                        "document_id": payload.get("document_id"),
+                        "document_version": payload.get("document_version"),
                         "error": None, "result": None, "callback_delivered": False,
                         "callback_error": None, "retry_count": 0,
                     }
@@ -108,5 +110,5 @@ class JobStore:
                     pipe.execute()
                 else:
                     pipe.unwatch()
-            except Exception:
+            except Exception:  # noqa: BLE001 - lock cleanup must not mask completed work.
                 pipe.reset()

@@ -7,7 +7,7 @@ import numpy as np
 
 from app.core.config import Settings
 from app.core.ids import sha256_text, stable_point_id
-from app.models.domain import CanonicalDocument, CanonicalSection, ChunkRecord
+from app.models.domain import CanonicalContent, CanonicalDocument, ChunkRecord
 from app.models.embedding import EmbeddingService
 
 SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?؟؛])\s+|\n+")
@@ -139,11 +139,11 @@ class SemanticChunker:
                 break
         return list(reversed(tail))
 
-    def _section_chunks(self, section: CanonicalSection) -> list[tuple[str, int]]:
-        total = self.embedder.count_tokens(section.text)
+    def _content_chunks(self, content: CanonicalContent) -> list[tuple[str, int]]:
+        total = self.embedder.count_tokens(content.text)
         if total <= self.settings.chunk_max_tokens:
-            return [(section.text, total)]
-        units = self._split_units(section.text)
+            return [(content.text, total)]
+        units = self._split_units(content.text)
         groups = self._group_units(units)
         return [
             (text, self.embedder.count_tokens(text))
@@ -153,13 +153,17 @@ class SemanticChunker:
 
     def chunk(self, document: CanonicalDocument) -> list[ChunkRecord]:
         output: list[ChunkRecord] = []
-        for section in document.sections:
-            section_chunks = self._section_chunks(section)
-            for chunk_index, (text, token_count) in enumerate(section_chunks):
+        for content in document.contents:
+            content_chunks = self._content_chunks(content)
+            for chunk_index, (text, token_count) in enumerate(content_chunks):
                 content_hash = sha256_text(text)
+                stable_content_identity = (
+                    content.content_id
+                    or f"{content.content_type}:{content.content_order}:{content_hash}"
+                )
                 point_id = stable_point_id(
                     document.organization_id, document.wiki_id, document.document_id,
-                    document.document_version, section.section_id, chunk_index, content_hash
+                    document.document_version, stable_content_identity, chunk_index, content_hash
                 )
                 output.append(ChunkRecord(
                     point_id=point_id, document_id=document.document_id,
@@ -169,11 +173,17 @@ class SemanticChunker:
                     tags=document.tags, visibility=document.visibility, acl_groups=document.acl_groups,
                     artifact_bucket=document.artifact_bucket, artifact_key=document.artifact_key,
                     artifact_sha256=document.artifact_sha256, artifact_etag=document.artifact_etag,
+                    source_kind=document.source_kind, content_id=content.content_id,
+                    content_type=content.content_type, content_title=content.content_title,
+                    content_order=content.content_order,
+                    source_metadata={**document.source_metadata, **content.source_metadata},
                     stage2_job_id=document.stage2_job_id,
-                    stage2_pipeline_version=document.stage2_pipeline_version, section_id=section.section_id,
-                    section_type_id=section.type_id, section_title=section.title, section_order=section.order,
-                    page_start=section.page_start, page_end=section.page_end, source_blocks=section.source_blocks,
-                    section_confidence=section.confidence, section_classifier=section.classifier,
+                    stage2_pipeline_version=document.stage2_pipeline_version,
+                    section_type_id=content.section_type_id,
+                    page_start=content.page_start, page_end=content.page_end,
+                    source_blocks=content.source_blocks,
+                    section_confidence=content.section_confidence,
+                    section_classifier=content.section_classifier,
                     chunk_index=chunk_index, text=text, content_hash=content_hash, token_count=token_count,
                     document_metadata=document.metadata,
                 ))

@@ -88,7 +88,21 @@ The first start can be slow because `model-cache` downloads both model snapshots
 
 Qdrant is intentionally different from Redis: it is a dedicated Stage-3 service because both API/search and Celery/indexing need one concurrent, persistent vector store. `doc-linker-qdrant` stores vectors in the `doc_linker_qdrant` named volume and stays private on `wikio`; its port is not published to the host by default.
 
-The Qdrant collection (`wiki_chunks_v1` by default) and payload indexes are created/validated by the application. New documents are upserted into the same collection. Replacement verifies the new version before deleting older version points, and document deletion removes points by payload filter.
+The Qdrant collection (`wiki_chunks_v1` by default) and payload indexes are created/validated by the application. Candidates are upserted with `version_state=inactive`; after verification, an ordered payload update makes the candidate active and other active versions inactive. Historical version points remain stored. Only the explicit Backend delete operation removes points.
+
+### One-time `version_state` migration
+
+Existing points created before this lifecycle do not contain `version_state` and will no longer appear in normal active-only search until migrated. Run the explicit script once during rollout. It groups by organization/wiki/document, selects the latest positive numeric surviving version, marks every version inactive, and then activates that latest version.
+
+```bash
+# read-only report (default)
+docker compose run --rm api python -m scripts.migrate_active_versions
+
+# apply after reviewing the report
+docker compose run --rm api python -m scripts.migrate_active_versions --apply
+```
+
+The migration is idempotent and is intentionally not run at application startup.
 
 ## Persistent state
 
@@ -101,10 +115,12 @@ doc_linker_qdrant     vector database storage
 
 Redis persistence belongs to the shared infrastructure and is not removed by `docker compose down` in this repository. `docker compose down -v` deletes the Stage-3 Qdrant/model-cache volumes and must not be used in production unless that data loss is intentional.
 
-## CI/CD ownership
+## CI/CD and branch runtime
 
-No `.gitlab-ci.yml` is kept in this repository. The DevOps team owns the GitLab deployment pipeline and should provide the production `.env`, ensure the shared `wikio` dependencies exist, then run the root `compose.yaml`.
+The `stage` branch deploys the CPU profile for integration testing. The `master` branch deploys the same application source with CUDA/GPU environment values. Runtime differences belong only in `.env`, Compose profile, Torch wheel source, device/FP16 variables, and CI-provided configuration.
 
-## Stage-2 provenance limitation
+The repository includes `.gitlab-ci.yml`; deployments must supply the environment file, preserve the external `wikio` services, validate `docker compose config`, and use fast-forward-only pulls where the deployment environment permits.
 
-`sections.json` carries section-level page ranges and source blocks. Stage 3 therefore returns those inherited ranges for each chunk. Exact character-level page references require future Stage-2 enrichment or an explicit layout cross-reference.
+## Published schema rollout requirement
+
+The authoritative Backend `document.json` serializer/fixture is not present in this checkout. Before production rollout, exchange a real immutable snapshot fixture with Backend and narrow/confirm `PublishedDocumentAdapter`. Stage 3 deliberately does not manufacture page, OCR, paragraph, classifier, or Template Maker provenance that is absent from the published file.

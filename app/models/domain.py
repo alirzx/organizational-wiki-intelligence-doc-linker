@@ -5,17 +5,54 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class CanonicalSection:
-    section_id: str
-    type_id: int | None
-    title: str
+class CanonicalContent:
+    """One ordered semantic unit from a source document.
+
+    The generic content fields are authoritative. The optional legacy fields
+    retain useful Stage-2 extraction provenance without requiring it for a
+    Backend-published snapshot.
+    """
+
+    content_id: str | None
+    content_type: str
+    content_title: str
     text: str
-    order: int
+    content_order: int
+    source_metadata: dict[str, Any] = field(default_factory=dict)
+    section_type_id: int | None = None
     page_start: int | None = None
     page_end: int | None = None
     source_blocks: tuple[int, ...] = ()
-    confidence: float | None = None
-    classifier: str | None = None
+    section_confidence: float | None = None
+    section_classifier: str | None = None
+
+    @property
+    def section_id(self) -> str | None:
+        return self.content_id
+
+    @property
+    def type_id(self) -> int | None:
+        return self.section_type_id
+
+    @property
+    def title(self) -> str:
+        return self.content_title
+
+    @property
+    def order(self) -> int:
+        return self.content_order
+
+    @property
+    def confidence(self) -> float | None:
+        return self.section_confidence
+
+    @property
+    def classifier(self) -> str | None:
+        return self.section_classifier
+
+
+# Compatibility import for callers that still use the Stage-2 domain name.
+CanonicalSection = CanonicalContent
 
 
 @dataclass(frozen=True)
@@ -34,10 +71,18 @@ class CanonicalDocument:
     artifact_key: str
     artifact_sha256: str
     artifact_etag: str | None
-    stage2_job_id: str | None
-    stage2_pipeline_version: str | None
-    sections: tuple[CanonicalSection, ...]
+    source_kind: str
+    contents: tuple[CanonicalContent, ...]
+    source_metadata: dict[str, Any] = field(default_factory=dict)
+    stage2_job_id: str | None = None
+    stage2_pipeline_version: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def sections(self) -> tuple[CanonicalContent, ...]:
+        """Compatibility view for the existing chunker/legacy adapter API."""
+
+        return self.contents
 
 
 @dataclass(frozen=True)
@@ -57,12 +102,15 @@ class ChunkRecord:
     artifact_key: str
     artifact_sha256: str
     artifact_etag: str | None
+    source_kind: str
+    content_id: str | None
+    content_type: str
+    content_title: str
+    content_order: int
+    source_metadata: dict[str, Any]
     stage2_job_id: str | None
     stage2_pipeline_version: str | None
-    section_id: str
     section_type_id: int | None
-    section_title: str
-    section_order: int
     page_start: int | None
     page_end: int | None
     source_blocks: tuple[int, ...]
@@ -74,12 +122,20 @@ class ChunkRecord:
     token_count: int
     document_metadata: dict[str, Any] = field(default_factory=dict)
 
-    def payload(self, *, embedding_model: str, chunker_version: str, indexed_at: str) -> dict[str, Any]:
+    def payload(
+        self,
+        *,
+        embedding_model: str,
+        chunker_version: str,
+        indexed_at: str,
+        version_state: str,
+    ) -> dict[str, Any]:
         return {
             "organization_id": self.organization_id,
             "wiki_id": self.wiki_id,
             "document_id": self.document_id,
             "document_version": self.document_version,
+            "version_state": version_state,
             "document_title": self.document_title,
             "source_filename": self.source_filename,
             "language": self.language,
@@ -90,12 +146,19 @@ class ChunkRecord:
             "artifact_key": self.artifact_key,
             "artifact_sha256": self.artifact_sha256,
             "artifact_etag": self.artifact_etag,
+            "source_kind": self.source_kind,
+            "content_id": self.content_id,
+            "content_type": self.content_type,
+            "content_title": self.content_title,
+            "content_order": self.content_order,
+            "source_metadata": self.source_metadata,
+            # Optional compatibility provenance for legacy Stage-2 artifacts.
             "stage2_job_id": self.stage2_job_id,
             "stage2_pipeline_version": self.stage2_pipeline_version,
-            "section_id": self.section_id,
+            "section_id": self.content_id,
             "section_type_id": self.section_type_id,
-            "section_title": self.section_title,
-            "section_order": self.section_order,
+            "section_title": self.content_title,
+            "section_order": self.content_order,
             "page_start": self.page_start,
             "page_end": self.page_end,
             "source_blocks": list(self.source_blocks),

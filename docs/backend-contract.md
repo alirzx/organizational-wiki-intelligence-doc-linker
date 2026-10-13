@@ -1,36 +1,26 @@
 # Stage 3 API contract
 
-Base path: `/api/v1`.
+Base path: `/api/v1`. `document_id` is Backend `Document.id`; `document_version` is `WikiDocument.version_number`. Backend `WikiDocument.id` is not part of this contract.
 
-Protected endpoints accept either `X-API-Key: <DOC_LINKER_API_AUTH_TOKEN>` or `Authorization: Bearer <DOC_LINKER_API_AUTH_TOKEN>`. The service never accepts arbitrary MinIO endpoints or Backend callback URLs in requests.
-
-## Index a completed Stage-2 artifact
-
-`POST /api/v1/documents/index-ready` returns HTTP `202` after request/artifact validation and durable Redis job reservation. It does not wait for chunking, embedding or Qdrant.
+## POST /documents/index-ready
 
 ```json
 {
-  "document_id": "59",
+  "document_id": "64",
   "organization_id": "org-1",
   "wiki_id": "wiki-main",
-  "document_version": "3",
+  "document_version": "2",
   "artifact": {
     "bucket": "media",
-    "object_key": "documents/59/Sectioning/ocr/sections.json",
-    "uri": "s3://media/documents/59/Sectioning/ocr/sections.json",
+    "object_key": "documents/64/versions/v2/document.json",
+    "uri": "s3://media/documents/64/versions/v2/document.json",
     "content_type": "application/json",
     "etag": null,
     "sha256": null
   },
-  "manifest": {
-    "bucket": "media",
-    "object_key": "documents/59/Sectioning/ocr/manifest.json",
-    "etag": null,
-    "sha256": null
-  },
   "document": {
-    "title": "Document title",
-    "source_filename": "source.pdf",
+    "title": "Security Policy",
+    "source_filename": "security-policy.pdf",
     "language": "fa",
     "tags": ["policy"],
     "visibility": "internal",
@@ -41,59 +31,99 @@ Protected endpoints accept either `X-API-Key: <DOC_LINKER_API_AUTH_TOKEN>` or `A
 }
 ```
 
-Rules: bucket must be the configured Wiki bucket; key must be under `documents/{document_id}/Sectioning/`; accepted artifacts are `sections.json`, `sections.docx`, `sections.md`; optional `uri` must match bucket/key exactly; optional manifest must be sibling `manifest.json`, have `status=succeeded`, match document ID and list the artifact. `sections.json` is preferred. `replace_existing=true` removes older versions only after the new version is verified.
+`document_version` is a JSON string for compatibility but must match `[1-9][0-9]*`. The object key must be exactly `documents/{document_id}/versions/v{document_version}/document.json`. The configured bucket must match; URI mismatches, path traversal, alternate filenames, Stage-2 paths, and arbitrary version labels are rejected.
 
-Response:
+At acceptance, Stage 3 stats the object and persists the live ETag into the durable job payload. A caller-supplied ETag must match. The worker verifies that accepted ETag, optional SHA256, size limits, and mutation-during-download. Missing objects fail before job creation with `artifact-not-found`.
 
-```json
-{"job_id":"...","status":"queued","start_time":"..."}
-```
-
-## Job status
-
-`GET /api/v1/jobs/{job_id}`. Index statuses include `queued`, `downloading`, `parsing`, `chunking`, `embedding`, `indexing`, `verifying`, `retrying`, `succeeded`, `failed`. Delete additionally uses `deleting`.
-
-## Search
-
-`POST /api/v1/search`
+HTTP 202:
 
 ```json
 {
-  "query": "مسئولیت‌های تیم امنیت چیست؟",
-  "organization_id": "org-1",
-  "wiki_id": "wiki-main",
-  "limit": 5,
-  "candidate_limit": 40,
-  "mode": "hybrid",
-  "filters": {
-    "document_ids": [],
-    "section_type_ids": [],
-    "tags": ["policy"],
-    "language": "fa",
-    "visibility": ["internal"],
-    "acl_groups": ["security-team"]
-  }
+  "job_id": "f4a2c9",
+  "document_id": "64",
+  "document_version": "2",
+  "status": "queued",
+  "start_time": "2026-10-13T10:00:00Z"
 }
 ```
 
-`organization_id` and `wiki_id` are mandatory. Mode is `dense` or `hybrid`. Default final limit is 5 and configured maximum is 20. Each result contains scores, text, document/version/title/source filename, section identity/type/order/classifier/confidence, inherited page range/source blocks, chunk index, artifact key/hash and document metadata, plus timing fields.
+A duplicate immutable identity reuses an existing non-failed job. Identity includes tenant/wiki/document/version, accepted artifact fingerprint and size, generation, pipeline/chunker versions, and embedding model. Failed jobs remain retryable.
 
-## Delete document embeddings
+`replace_existing=true` means activate this verified version and deactivate the prior active search version. It never deletes a historical Qdrant version or any MinIO snapshot.
 
-`DELETE /api/v1/documents/{document_id}` body:
+## GET /jobs/{job_id}
 
-```json
-{"organization_id":"org-1","wiki_id":"wiki-main","document_version":null,"request_id":"optional-backend-event-id"}
+Index jobs expose `job_id`, `document_id`, and `document_version` at top level. Status proceeds through:
+
+```text
+queued -> downloading -> parsing -> chunking -> embedding
+       -> indexing -> verifying -> succeeded / failed
 ```
 
-Null version deletes all indexed versions; a version deletes only that version. `request_id` is recommended for idempotent Backend retries. Operation is asynchronous and returns HTTP `202`.
+Celery may expose `retrying` between attempts. Callback delivery fields are independent of indexing success.
 
-## Health
+## POST /search
 
-`GET /health/live` and `GET /health/ready`. Readiness checks MinIO, Redis, Qdrant and the selected internal model-service.
+The request contract is unchanged: query, organization/wiki tenant IDs, optional limit/candidate/mode, and Backend-derived document/tag/language/visibility/ACL filters. Ordinary search always adds `version_state=active` internally.
 
-## Callback contract
+Published results expose generic references:
 
-Callback URL/token are deployment configuration. Callback failure never rolls back a verified Qdrant operation; job state exposes `callback_delivered` and `callback_error`.
+```json
+{
+  "document_id": "64",
+  "document_version": "2",
+  "content_id": "stable-backend-id-or-null",
+  "content_type": "section",
+  "content_title": "Access policy",
+  "content_order": 4,
+  "source_metadata": {},
+  "chunk_index": 1,
+  "artifact_key": "documents/64/versions/v2/document.json",
+  "content_hash": "..."
+}
+```
 
-Index success uses event `document-linking-indexed`, status `succeeded`, `job_id`, `document_id` and a `result` object containing collection, chunk count, deleted stale points, artifact SHA256, audit outputs/error and timings. Index failure uses `document-linking-failed`. Delete success uses `document-linking-deleted`; delete failure uses `document-linking-delete-failed`.
+Legacy `section_*`, page, source-block, and classifier fields remain optional for older Stage-2-derived points. Stage 3 does not invent them for published snapshots.
+
+## DELETE /documents/{document_id}
+
+```json
+{
+  "organization_id": "org-1",
+  "wiki_id": "wiki-main",
+  "document_version": null,
+  "request_id": "optional-event-id"
+}
+```
+
+Null version explicitly deletes all indexed versions; a version deletes only that Qdrant version. Publication replacement never calls this endpoint. Deleting the active version does not implicitly reactivate history.
+
+## Callbacks
+
+Success:
+
+```json
+{
+  "event": "document-linking-indexed",
+  "status": "succeeded",
+  "job_id": "f4a2c9",
+  "document_id": "64",
+  "document_version": "2",
+  "result": {}
+}
+```
+
+Failure:
+
+```json
+{
+  "event": "document-linking-failed",
+  "status": "failed",
+  "job_id": "f4a2c9",
+  "document_id": "64",
+  "document_version": "2",
+  "error": {"type": "RuntimeError", "message": "indexing failed"}
+}
+```
+
+Callback failure never rolls back successfully indexed data. Callback delivery never changes Qdrant active state.

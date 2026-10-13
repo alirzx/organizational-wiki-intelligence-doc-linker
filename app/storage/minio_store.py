@@ -48,7 +48,7 @@ class MinIOStore:
     def healthcheck(self) -> bool:
         try:
             return self.client.bucket_exists(self.settings.minio_bucket)
-        except Exception:
+        except Exception:  # noqa: BLE001 - health checks must report false, not raise.
             return False
 
     @staticmethod
@@ -105,7 +105,7 @@ class MinIOStore:
         )
         info = self.stat(bucket, object_key)
         if info.size != len(data):
-            raise IOError(f"Uploaded size mismatch for {object_key}")
+            raise OSError(f"Uploaded size mismatch for {object_key}")
         return ObjectSnapshot(bucket, object_key, info.etag, info.size, sha256_bytes(data))
 
     def upload_json(self, bucket: str, object_key: str, payload: dict) -> ObjectSnapshot:
@@ -116,5 +116,5 @@ class MinIOStore:
         try:
             self.stat(bucket, object_key)
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - MinIO maps absence to several SDK errors.
             return False

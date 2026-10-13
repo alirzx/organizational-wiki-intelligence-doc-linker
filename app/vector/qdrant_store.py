@@ -21,6 +21,14 @@ class RetrievedPoint:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ActivationResult:
+    activated: bool
+    active_version: str | None
+    reason: str
+    deactivated_points: int = 0
+
+
 class QdrantStore:
     def __init__(self, settings: Settings, client: QdrantClient | None = None):
         self.settings = settings
@@ -37,7 +45,7 @@ class QdrantStore:
         try:
             self.client.get_collections()
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - health checks must report false, not raise.
             return False
 
     def ensure_collection(self) -> None:
@@ -72,6 +80,9 @@ class QdrantStore:
             "wiki_id": models.PayloadSchemaType.KEYWORD,
             "document_id": models.PayloadSchemaType.KEYWORD,
             "document_version": models.PayloadSchemaType.KEYWORD,
+            "version_state": models.PayloadSchemaType.KEYWORD,
+            "content_id": models.PayloadSchemaType.KEYWORD,
+            "content_type": models.PayloadSchemaType.KEYWORD,
             "section_id": models.PayloadSchemaType.KEYWORD,
             "section_type_id": models.PayloadSchemaType.INTEGER,
             "language": models.PayloadSchemaType.KEYWORD,
@@ -94,7 +105,17 @@ class QdrantStore:
                     continue
                 raise RuntimeError(f"Could not create Qdrant payload index {field_name}: {exc}") from exc
 
-    def upsert(self, chunks: list[EmbeddedChunk], *, embedding_model: str, chunker_version: str, indexed_at: str) -> None:
+    def upsert(
+        self,
+        chunks: list[EmbeddedChunk],
+        *,
+        embedding_model: str,
+        chunker_version: str,
+        indexed_at: str,
+        version_state: str = "inactive",
+    ) -> None:
+        if version_state not in {"active", "inactive"}:
+            raise ValueError("version_state must be active or inactive")
         batch_size = self.settings.qdrant_upsert_batch_size
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
@@ -115,6 +136,7 @@ class QdrantStore:
                             embedding_model=embedding_model,
                             chunker_version=chunker_version,
                             indexed_at=indexed_at,
+                            version_state=version_state,
                         ),
                     )
                 )
@@ -147,6 +169,11 @@ class QdrantStore:
             exact=True,
         )
         return int(result.count)
+
+    def count_document_version(
+        self, organization_id: str, wiki_id: str, document_id: str, document_version: str
+    ) -> int:
+        return self.count_document(organization_id, wiki_id, document_id, document_version)
 
     def delete_document(self, organization_id: str, wiki_id: str, document_id: str, document_version: str | None = None) -> int:
         before = self.count_document(organization_id, wiki_id, document_id, document_version)
@@ -188,25 +215,177 @@ class QdrantStore:
             )
         return len(obsolete)
 
-    def delete_stale_versions(self, organization_id: str, wiki_id: str, document_id: str, keep_version: str) -> int:
-        filt = models.Filter(
-            must=[
-                self._match("organization_id", organization_id),
-                self._match("wiki_id", wiki_id),
-                self._match("document_id", document_id),
-            ],
-            must_not=[self._match("document_version", keep_version)],
-        )
-        before = int(self.client.count(
-            collection_name=self.settings.qdrant_collection, count_filter=filt, exact=True
-        ).count)
-        if before:
-            self.client.delete(
+    def _version_state_filter(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        *,
+        state: str,
+        document_version: str | None = None,
+        exclude_version: str | None = None,
+    ) -> models.Filter:
+        base = self.document_filter(organization_id, wiki_id, document_id, document_version)
+        must = list(base.must or [])
+        must.append(self._match("version_state", state))
+        must_not = []
+        if exclude_version is not None:
+            must_not.append(self._match("document_version", exclude_version))
+        return models.Filter(must=must, must_not=must_not or None)
+
+    @staticmethod
+    def _numeric_version(value: str) -> int:
+        if not value.isascii() or not value.isdigit() or int(value) <= 0:
+            raise ValueError(f"Invalid stored document version: {value!r}")
+        return int(value)
+
+    def get_active_version(
+        self, organization_id: str, wiki_id: str, document_id: str
+    ) -> str | None:
+        versions: set[str] = set()
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
                 collection_name=self.settings.qdrant_collection,
-                points_selector=models.FilterSelector(filter=filt),
-                wait=True,
+                scroll_filter=self._version_state_filter(
+                    organization_id, wiki_id, document_id, state="active"
+                ),
+                limit=256,
+                offset=offset,
+                with_payload=["document_version"],
+                with_vectors=False,
             )
-        return before
+            versions.update(
+                str(point.payload.get("document_version"))
+                for point in points
+                if point.payload and point.payload.get("document_version") is not None
+            )
+            if offset is None:
+                break
+        if not versions:
+            return None
+        return max(versions, key=self._numeric_version)
+
+    def deactivate_other_versions(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        keep_version: str,
+    ) -> int:
+        filt = self._version_state_filter(
+            organization_id,
+            wiki_id,
+            document_id,
+            state="active",
+            exclude_version=keep_version,
+        )
+        count = int(
+            self.client.count(
+                collection_name=self.settings.qdrant_collection,
+                count_filter=filt,
+                exact=True,
+            ).count
+        )
+        if count:
+            self.client.set_payload(
+                collection_name=self.settings.qdrant_collection,
+                payload={"version_state": "inactive"},
+                points=filt,
+                wait=True,
+                ordering=models.WriteOrdering.STRONG,
+            )
+        return count
+
+    def activate_version(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        document_version: str,
+        *,
+        replace_existing: bool,
+    ) -> ActivationResult:
+        """Guarded active-version switch; historical points are only relabeled."""
+
+        candidate_number = self._numeric_version(document_version)
+        current = self.get_active_version(organization_id, wiki_id, document_id)
+        if current is not None and candidate_number < self._numeric_version(current):
+            return ActivationResult(False, current, "newer-version-already-active")
+        if current is not None and current != document_version and not replace_existing:
+            return ActivationResult(False, current, "replacement-disabled")
+
+        candidate_filter = self.document_filter(
+            organization_id, wiki_id, document_id, document_version
+        )
+        other_active_filter = self._version_state_filter(
+            organization_id,
+            wiki_id,
+            document_id,
+            state="active",
+            exclude_version=document_version,
+        )
+        deactivated = int(
+            self.client.count(
+                collection_name=self.settings.qdrant_collection,
+                count_filter=other_active_filter,
+                exact=True,
+            ).count
+        )
+        operations = [
+            models.SetPayloadOperation(
+                set_payload=models.SetPayload(
+                    payload={"version_state": "active"}, filter=candidate_filter
+                )
+            )
+        ]
+        if deactivated:
+            operations.append(
+                models.SetPayloadOperation(
+                    set_payload=models.SetPayload(
+                        payload={"version_state": "inactive"}, filter=other_active_filter
+                    )
+                )
+            )
+        try:
+            self.client.batch_update_points(
+                collection_name=self.settings.qdrant_collection,
+                update_operations=operations,
+                wait=True,
+                ordering=models.WriteOrdering.STRONG,
+            )
+        except Exception:
+            rollback = [
+                models.SetPayloadOperation(
+                    set_payload=models.SetPayload(
+                        payload={"version_state": "inactive"}, filter=candidate_filter
+                    )
+                )
+            ]
+            if current is not None and current != document_version:
+                rollback.append(
+                    models.SetPayloadOperation(
+                        set_payload=models.SetPayload(
+                            payload={"version_state": "active"},
+                            filter=self.document_filter(
+                                organization_id, wiki_id, document_id, current
+                            ),
+                        )
+                    )
+                )
+            try:
+                self.client.batch_update_points(
+                    collection_name=self.settings.qdrant_collection,
+                    update_operations=rollback,
+                    wait=True,
+                    ordering=models.WriteOrdering.STRONG,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not restore active version %s after activation failure", current
+                )
+            raise
+        return ActivationResult(True, document_version, "activated", deactivated)
 
     def _search_filter(
         self, organization_id: str, wiki_id: str, filters: SearchFilters
@@ -214,6 +393,7 @@ class QdrantStore:
         must: list[Any] = [
             self._match("organization_id", organization_id),
             self._match("wiki_id", wiki_id),
+            self._match("version_state", "active"),
         ]
         if filters.document_ids:
             must.append(models.FieldCondition(key="document_id", match=models.MatchAny(any=filters.document_ids)))

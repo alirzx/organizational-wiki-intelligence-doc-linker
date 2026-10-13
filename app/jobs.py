@@ -44,7 +44,7 @@ def index_document(self, job_id: str):
     service = get_indexer()
     try:
         return service.process(job_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Celery must record/retry any task failure.
         return _retry_or_fail(self, job_id, exc, service)
 
 
@@ -53,7 +53,7 @@ def delete_document(self, job_id: str):
     service = get_deleter()
     try:
         return service.process(job_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Celery must record/retry any task failure.
         return _retry_or_fail(self, job_id, exc, service)
 
 app = celery_app

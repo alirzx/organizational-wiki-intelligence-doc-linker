@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     pipeline_version: str = "1.0.0"
     chunker_version: str = "1.0.0"
 
-    def model_post_init(self, __context: object) -> None:
+    def model_post_init(self, __context: object, /) -> None:
         if not self.celery_broker_url:
             self.celery_broker_url = self.redis_url
         if not self.celery_result_backend:

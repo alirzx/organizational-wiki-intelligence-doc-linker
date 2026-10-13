@@ -1,92 +1,95 @@
 # Stage 3 architecture
 
-## End-to-end indexing
+## Published indexing graph
 
 ```text
-Backend receives Stage-2 completion
-  -> POST /api/v1/documents/index-ready
-  -> validate request + live MinIO object
-  -> shared Redis idempotency reservation
-  -> HTTP 202
-  -> Celery queue on shared Redis
-  -> worker document lock in shared Redis
-  -> optional Stage-2 manifest validation
-  -> verified MinIO download (ETag/SHA/size + mutation check)
-  -> artifact adapter
-       sections.json  -> full Stage-2 provenance
-       sections.docx  -> heading/text fallback
-       sections.md    -> heading/text fallback, Base64 image stripping
-  -> CanonicalDocument
-  -> cleaning/normalization
-  -> section-preserving semantic chunking
-       paragraphs/sentences
-       exact BGE tokenizer counts
-       adjacent-unit BGE similarity
-       target/max/min token bounds
-       overlap
-  -> BGE-M3 document encoding
-       dense vectors
-       learned lexical sparse vectors
-  -> deterministic point IDs
-  -> dedicated Qdrant upsert
-  -> remove obsolete points from same version
-  -> verify new version point count
-  -> optionally remove older versions
-  -> MinIO Linking audit artifacts
-  -> Backend callback
+POST /api/v1/documents/index-ready
+  -> IndexReadyRequest: strict versions/vN/document.json contract
+  -> MinIO stat: capture accepted ETag/size
+  -> JobStore.create_or_get: immutable fingerprint + pipeline identity
+  -> Celery index_document
+  -> per-tenant/document Redis lock
+  -> IndexingService.process
+  -> MinIOStore.download_verified: accepted ETag + optional SHA256 + mutation check
+  -> ArtifactAdapterFactory
+  -> PublishedDocumentAdapter
+  -> CanonicalDocument / CanonicalContent
+  -> SemanticChunker
+  -> BGE-M3 document embedding (1024 dense + learned sparse)
+  -> QdrantStore.upsert(version_state=inactive)
+  -> delete_obsolete_points(same document_version only)
+  -> count_document_version verification
+  -> QdrantStore.activate_version numeric guard
+  -> version-scoped Linking audit
+  -> succeeded job + Backend callback
 ```
 
-## Retrieval
+The lock covers verification and activation. It prevents concurrent changes, while the numeric comparison against Qdrant's currently active version prevents sequential late workers from downgrading search state.
+
+## Activation invariant
+
+The candidate is inactive until all points are written and the exact version count is verified. Activation uses ordered Qdrant payload operations: candidate points become active first, then other active versions become inactive. Historical points are relabeled, not deleted.
+
+```text
+active=v2, candidate=v3 succeeds  -> v2 inactive, v3 active
+active=v2, candidate=v3 fails     -> v2 remains active, v3 inactive/partial
+active=v3, delayed candidate=v2   -> v3 remains active, v2 inactive
+```
+
+`replace_existing=false` leaves a newer candidate inactive when another version is already active. The first successfully verified version becomes active even with no prior active version. Re-indexing the exact same version retains same-version obsolete-point cleanup.
+
+## Retrieval graph
 
 ```text
 POST /api/v1/search
-  -> validate organization_id + wiki_id + optional filters
-  -> BGE-M3 query encoding
-  -> dedicated Qdrant
-       dense prefetch
-       sparse prefetch
-       RRF fusion
-  -> default 40 candidates
-  -> BGE-reranker-v2-m3 pair scoring
-  -> final default 5 results
-  -> references + timings
+  -> RetrievalService.search
+  -> BGE-M3 query dense + sparse encoding
+  -> Qdrant filter:
+       organization_id + wiki_id + version_state=active
+       + Backend document/tag/language/visibility/ACL filters
+  -> dense/sparse prefetch + RRF
+  -> candidate pool (default 40)
+  -> BGE-reranker-v2-m3
+  -> SearchResult with generic published-content references
 ```
 
-Qdrant hybrid search uses the Query API with dense/sparse prefetch and RRF. The collection is shared by all wiki documents; organization/wiki/document identity live in payload fields and payload indexes.
+There is no ordinary historical-search mode. Inactive versions are physically preserved but cannot leak into normal search.
 
-## Canonical source precedence
+## Source model
 
-1. `Sectioning/.../sections.json` — preferred; contains full Stage-2 text plus section/page/source-block/classifier provenance.
-2. `Sectioning/.../sections.docx` — compatibility fallback; full rendered text plus embedded images, which Stage 3 excludes from the text vector index.
-3. `Sectioning/.../sections.md` — compatibility fallback; full rendered text plus Base64 images, which Stage 3 strips before text processing.
-
-JSON avoids reverse-engineering structure already produced by Stage 2. DOCX and Markdown cannot recover all page/source-block/classifier provenance and therefore return weaker references.
-
-## Replacement and idempotency
-
-Point IDs are deterministic from tenant, document/version, section, chunk index and content hash. The worker writes a new revision first, removes same-version stale chunks, verifies the expected count, and only then removes older versions when requested.
-
-API job identity also includes document generation, pipeline version, chunker version, embedding model and artifact fingerprint. A successful delete increments the document generation in shared Redis. This permits safe re-indexing of the same artifact/version after deletion while keeping duplicate Stage-2 callbacks idempotent.
-
-## Model ownership
-
-The root Compose file has two mutually exclusive profiles: `model-service-cpu` and `model-service-gpu`. Only one should run. Both use the network alias `model-service`. API and worker call that alias over the internal `wikio` network. The one-shot `model-cache` service uses Hugging Face `snapshot_download` to populate the persistent cache without loading model weights. The selected model-service then warms BGE-M3 and the reranker exactly once.
-
-## Storage/service ownership
+The primary adapter emits generic source concepts:
 
 ```text
-Shared MinIO media/documents/{id}/Sectioning/...  read-only to Stage 3
-Shared MinIO media/documents/{id}/Linking/...     Stage 3 audit outputs
-Shared Redis on wikio                              broker/results + jobs/locks/idempotency/generation
-Dedicated Qdrant wiki_chunks_v1                    live retrieval index
+source_kind=published_snapshot
+content_id (optional stable Backend/editor ID)
+content_type
+content_title
+content_order
+source_metadata
 ```
 
-Redis is external infrastructure reused by multiple Wiki Hami services. Stage 3 uses separate Redis logical DBs but does not own a Redis container. Qdrant is Stage-3-owned, persistent and shared concurrently by the API/search path and Celery indexing/deletion path.
+When a stable ID exists it participates in deterministic point identity and is returned unchanged. When it does not exist, Stage 3 does not fabricate a public source ID; deterministic point identity falls back internally to content type/order/hash. Optional legacy Stage-2 page, block, classifier, and section metadata remains in the payload only when an old adapter actually supplies it.
+
+## Storage ownership
+
+```text
+Shared MinIO documents/{id}/versions/vN/document.json       Backend-owned, read-only
+Shared MinIO documents/{id}/Linking/versions/vN/...         Stage-3 audit ownership
+Shared Redis                                                jobs/locks/idempotency/generation + Celery
+Dedicated Qdrant wiki_chunks_v1                             vectors + active search metadata
+```
+
+Explicit `DELETE /api/v1/documents/{document_id}` may delete all indexed Qdrant versions or one version. Replacement never calls delete. Deleting an active version does not automatically reactivate an older version because the Backend contract does not define that policy.
+
+## Published snapshot schema boundary
+
+No Backend serializer or fixture for `document.json` exists in this repository or the available neighboring Stage-2 project. Until the Backend schema is supplied, all tolerance is confined to `PublishedDocumentAdapter`: an object (optionally under `document`) with ordered `content`, `contents`, `sections`, or `blocks`; a text `content` is also accepted. Items may provide `id`/content/section/block/node IDs, type, title, order, text, metadata/attrs, or nested editor text nodes. This temporary compatibility surface must be replaced or narrowed when the authoritative serializer is available; no guessed fields leak into Qdrant lifecycle code.
 
 ## Security boundaries
 
-- MinIO endpoint and Backend callback URL come only from deployment configuration.
-- Request artifact `uri`, when present, must exactly equal `s3://{bucket}/{object_key}`.
-- Artifact key must be under `documents/{document_id}/Sectioning/` and be one of `sections.json`, `sections.docx`, or `sections.md`.
-- `organization_id` and `wiki_id` are mandatory on every search.
-- ACL/visibility filters are supported, but Backend remains responsible for translating authenticated-user permissions into search filters.
+- The request path must exactly match `documents/{document_id}/versions/v{positive_integer}/document.json`.
+- `uri`, when present, must exactly match `s3://{bucket}/{object_key}`.
+- The bucket must equal the deployment-configured Wiki bucket.
+- Object traversal is rejected.
+- The API persists the live ETag accepted at request time; the worker must download that fingerprint.
+- Network destinations and credentials remain deployment configuration.
