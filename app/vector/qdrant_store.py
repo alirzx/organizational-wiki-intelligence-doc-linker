@@ -27,6 +27,18 @@ class ActivationResult:
     active_version: str | None
     reason: str
     deactivated_points: int = 0
+    active_index_revision: str | None = None
+
+
+@dataclass(frozen=True)
+class ActiveRevision:
+    document_version: str
+    index_revision: str
+    point_count: int
+
+
+class ActiveStateInvariantError(RuntimeError):
+    """The stored active points do not identify exactly one internal revision."""
 
 
 class QdrantStore:
@@ -80,6 +92,7 @@ class QdrantStore:
             "wiki_id": models.PayloadSchemaType.KEYWORD,
             "document_id": models.PayloadSchemaType.KEYWORD,
             "document_version": models.PayloadSchemaType.KEYWORD,
+            "index_revision": models.PayloadSchemaType.KEYWORD,
             "version_state": models.PayloadSchemaType.KEYWORD,
             "content_id": models.PayloadSchemaType.KEYWORD,
             "content_type": models.PayloadSchemaType.KEYWORD,
@@ -162,6 +175,21 @@ class QdrantStore:
             must.append(self._match("document_version", document_version))
         return models.Filter(must=must)
 
+    def revision_filter(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        document_version: str,
+        index_revision: str,
+    ) -> models.Filter:
+        base = self.document_filter(
+            organization_id, wiki_id, document_id, document_version
+        )
+        return models.Filter(
+            must=[*(base.must or []), self._match("index_revision", index_revision)]
+        )
+
     def count_document(self, organization_id: str, wiki_id: str, document_id: str, document_version: str | None = None) -> int:
         result = self.client.count(
             collection_name=self.settings.qdrant_collection,
@@ -174,6 +202,23 @@ class QdrantStore:
         self, organization_id: str, wiki_id: str, document_id: str, document_version: str
     ) -> int:
         return self.count_document(organization_id, wiki_id, document_id, document_version)
+
+    def count_revision(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        document_version: str,
+        index_revision: str,
+    ) -> int:
+        result = self.client.count(
+            collection_name=self.settings.qdrant_collection,
+            count_filter=self.revision_filter(
+                organization_id, wiki_id, document_id, document_version, index_revision
+            ),
+            exact=True,
+        )
+        return int(result.count)
 
     def delete_document(self, organization_id: str, wiki_id: str, document_id: str, document_version: str | None = None) -> int:
         before = self.count_document(organization_id, wiki_id, document_id, document_version)
@@ -188,9 +233,11 @@ class QdrantStore:
 
     def delete_obsolete_points(
         self, organization_id: str, wiki_id: str, document_id: str,
-        document_version: str, keep_point_ids: list[str],
+        document_version: str, index_revision: str, keep_point_ids: list[str],
     ) -> int:
-        filt = self.document_filter(organization_id, wiki_id, document_id, document_version)
+        filt = self.revision_filter(
+            organization_id, wiki_id, document_id, document_version, index_revision
+        )
         existing_ids: list[str] = []
         offset = None
         while True:
@@ -223,14 +270,21 @@ class QdrantStore:
         *,
         state: str,
         document_version: str | None = None,
-        exclude_version: str | None = None,
+        index_revision: str | None = None,
+        exclude_revision: tuple[str, str] | None = None,
     ) -> models.Filter:
         base = self.document_filter(organization_id, wiki_id, document_id, document_version)
         must = list(base.must or [])
         must.append(self._match("version_state", state))
-        must_not = []
-        if exclude_version is not None:
-            must_not.append(self._match("document_version", exclude_version))
+        if index_revision is not None:
+            must.append(self._match("index_revision", index_revision))
+        must_not: list[Any] = []
+        if exclude_revision is not None:
+            excluded_version, excluded_index_revision = exclude_revision
+            must_not.append(models.Filter(must=[
+                self._match("document_version", excluded_version),
+                self._match("index_revision", excluded_index_revision),
+            ]))
         return models.Filter(must=must, must_not=must_not or None)
 
     @staticmethod
@@ -239,10 +293,10 @@ class QdrantStore:
             raise ValueError(f"Invalid stored document version: {value!r}")
         return int(value)
 
-    def get_active_version(
+    def get_active_state(
         self, organization_id: str, wiki_id: str, document_id: str
-    ) -> str | None:
-        versions: set[str] = set()
+    ) -> ActiveRevision | None:
+        states: dict[tuple[str, str], int] = {}
         offset = None
         while True:
             points, offset = self.client.scroll(
@@ -252,33 +306,70 @@ class QdrantStore:
                 ),
                 limit=256,
                 offset=offset,
-                with_payload=["document_version"],
+                with_payload=["document_version", "index_revision"],
                 with_vectors=False,
             )
-            versions.update(
-                str(point.payload.get("document_version"))
-                for point in points
-                if point.payload and point.payload.get("document_version") is not None
-            )
+            for point in points:
+                payload = point.payload or {}
+                version = str(payload.get("document_version") or "")
+                index_revision = str(payload.get("index_revision") or "")
+                try:
+                    self._numeric_version(version)
+                except ValueError as exc:
+                    raise ActiveStateInvariantError(str(exc)) from exc
+                if not index_revision:
+                    raise ActiveStateInvariantError(
+                        "Active Qdrant point is missing index_revision"
+                    )
+                identity = (version, index_revision)
+                states[identity] = states.get(identity, 0) + 1
             if offset is None:
                 break
-        if not versions:
+        if not states:
             return None
-        return max(versions, key=self._numeric_version)
+        if len(states) != 1:
+            identities = ", ".join(
+                f"v{version}/{revision}" for version, revision in sorted(states)
+            )
+            raise ActiveStateInvariantError(
+                f"Multiple active indexing revisions for document {document_id}: {identities}"
+            )
+        (version, index_revision), point_count = next(iter(states.items()))
+        revision_count = self.count_revision(
+            organization_id,
+            wiki_id,
+            document_id,
+            version,
+            index_revision,
+        )
+        if point_count != revision_count:
+            raise ActiveStateInvariantError(
+                "Active indexing revision is only partially active: "
+                f"v{version}/{index_revision} has {point_count} active of "
+                f"{revision_count} total points"
+            )
+        return ActiveRevision(version, index_revision, point_count)
 
-    def deactivate_other_versions(
+    def get_active_version(
+        self, organization_id: str, wiki_id: str, document_id: str
+    ) -> str | None:
+        active = self.get_active_state(organization_id, wiki_id, document_id)
+        return active.document_version if active else None
+
+    def deactivate_other_revisions(
         self,
         organization_id: str,
         wiki_id: str,
         document_id: str,
         keep_version: str,
+        keep_index_revision: str,
     ) -> int:
         filt = self._version_state_filter(
             organization_id,
             wiki_id,
             document_id,
             state="active",
-            exclude_version=keep_version,
+            exclude_revision=(keep_version, keep_index_revision),
         )
         count = int(
             self.client.count(
@@ -297,33 +388,185 @@ class QdrantStore:
             )
         return count
 
+    def _verify_active_revision(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        document_version: str,
+        index_revision: str,
+        expected_point_count: int,
+    ) -> ActiveRevision:
+        active = self.get_active_state(organization_id, wiki_id, document_id)
+        if active is None:
+            raise ActiveStateInvariantError("Activation produced no active revision")
+        if (
+            active.document_version != document_version
+            or active.index_revision != index_revision
+        ):
+            raise ActiveStateInvariantError(
+                "Activation produced the wrong active revision: "
+                f"expected v{document_version}/{index_revision}, got "
+                f"v{active.document_version}/{active.index_revision}"
+            )
+        if active.point_count != expected_point_count:
+            raise ActiveStateInvariantError(
+                "Active candidate point count mismatch: "
+                f"expected {expected_point_count}, got {active.point_count}"
+            )
+        return active
+
+    def _restore_active_revision(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        previous: ActiveRevision | None,
+    ) -> None:
+        all_active = self._version_state_filter(
+            organization_id, wiki_id, document_id, state="active"
+        )
+        operations = [
+            models.SetPayloadOperation(
+                set_payload=models.SetPayload(
+                    payload={"version_state": "inactive"}, filter=all_active
+                )
+            )
+        ]
+        if previous is not None:
+            operations.append(
+                models.SetPayloadOperation(
+                    set_payload=models.SetPayload(
+                        payload={"version_state": "active"},
+                        filter=self.revision_filter(
+                            organization_id,
+                            wiki_id,
+                            document_id,
+                            previous.document_version,
+                            previous.index_revision,
+                        ),
+                    )
+                )
+            )
+        self.client.batch_update_points(
+            collection_name=self.settings.qdrant_collection,
+            update_operations=operations,
+            wait=True,
+            ordering=models.WriteOrdering.STRONG,
+        )
+        restored = self.get_active_state(organization_id, wiki_id, document_id)
+        if previous is None:
+            if restored is not None:
+                raise ActiveStateInvariantError(
+                    "Rollback could not restore the previous zero-active state"
+                )
+            return
+        if restored != previous:
+            raise ActiveStateInvariantError(
+                "Rollback did not restore the previous active revision"
+            )
+
+    def _rollback_after_activation_failure(
+        self,
+        organization_id: str,
+        wiki_id: str,
+        document_id: str,
+        previous: ActiveRevision | None,
+    ) -> None:
+        try:
+            self._restore_active_revision(
+                organization_id, wiki_id, document_id, previous
+            )
+        except Exception as rollback_error:
+            logger.critical(
+                "Could not restore active revision %s after activation failure",
+                previous,
+                exc_info=True,
+            )
+            raise ActiveStateInvariantError(
+                "Activation failed and rollback could not restore a valid active state"
+            ) from rollback_error
+
     def activate_version(
         self,
         organization_id: str,
         wiki_id: str,
         document_id: str,
         document_version: str,
+        index_revision: str,
         *,
         replace_existing: bool,
+        expected_point_count: int,
     ) -> ActivationResult:
-        """Guarded active-version switch; historical points are only relabeled."""
+        """Guard and verify an internal revision switch without deleting history."""
 
         candidate_number = self._numeric_version(document_version)
-        current = self.get_active_version(organization_id, wiki_id, document_id)
-        if current is not None and candidate_number < self._numeric_version(current):
-            return ActivationResult(False, current, "newer-version-already-active")
-        if current is not None and current != document_version and not replace_existing:
-            return ActivationResult(False, current, "replacement-disabled")
+        if not index_revision:
+            raise ValueError("index_revision must not be empty")
+        if expected_point_count <= 0:
+            raise ValueError("expected_point_count must be positive")
+        candidate_count = self.count_revision(
+            organization_id,
+            wiki_id,
+            document_id,
+            document_version,
+            index_revision,
+        )
+        if candidate_count != expected_point_count:
+            raise ActiveStateInvariantError(
+                "Candidate point count changed before activation: "
+                f"expected {expected_point_count}, got {candidate_count}"
+            )
 
-        candidate_filter = self.document_filter(
-            organization_id, wiki_id, document_id, document_version
+        current = self.get_active_state(organization_id, wiki_id, document_id)
+        if current is not None and candidate_number < self._numeric_version(
+            current.document_version
+        ):
+            return ActivationResult(
+                False,
+                current.document_version,
+                "newer-version-already-active",
+                active_index_revision=current.index_revision,
+            )
+        candidate_identity = (document_version, index_revision)
+        if current is not None and (
+            current.document_version, current.index_revision
+        ) == candidate_identity:
+            self._verify_active_revision(
+                organization_id,
+                wiki_id,
+                document_id,
+                document_version,
+                index_revision,
+                expected_point_count,
+            )
+            return ActivationResult(
+                True,
+                document_version,
+                "already-active",
+                active_index_revision=index_revision,
+            )
+        if current is not None and not replace_existing:
+            return ActivationResult(
+                False,
+                current.document_version,
+                "replacement-disabled",
+                active_index_revision=current.index_revision,
+            )
+
+        candidate_filter = self.revision_filter(
+            organization_id,
+            wiki_id,
+            document_id,
+            document_version,
+            index_revision,
         )
         other_active_filter = self._version_state_filter(
             organization_id,
             wiki_id,
             document_id,
             state="active",
-            exclude_version=document_version,
+            exclude_revision=candidate_identity,
         )
         deactivated = int(
             self.client.count(
@@ -355,37 +598,31 @@ class QdrantStore:
                 ordering=models.WriteOrdering.STRONG,
             )
         except Exception:
-            rollback = [
-                models.SetPayloadOperation(
-                    set_payload=models.SetPayload(
-                        payload={"version_state": "inactive"}, filter=candidate_filter
-                    )
-                )
-            ]
-            if current is not None and current != document_version:
-                rollback.append(
-                    models.SetPayloadOperation(
-                        set_payload=models.SetPayload(
-                            payload={"version_state": "active"},
-                            filter=self.document_filter(
-                                organization_id, wiki_id, document_id, current
-                            ),
-                        )
-                    )
-                )
-            try:
-                self.client.batch_update_points(
-                    collection_name=self.settings.qdrant_collection,
-                    update_operations=rollback,
-                    wait=True,
-                    ordering=models.WriteOrdering.STRONG,
-                )
-            except Exception:
-                logger.exception(
-                    "Could not restore active version %s after activation failure", current
-                )
+            self._rollback_after_activation_failure(
+                organization_id, wiki_id, document_id, current
+            )
             raise
-        return ActivationResult(True, document_version, "activated", deactivated)
+        try:
+            self._verify_active_revision(
+                organization_id,
+                wiki_id,
+                document_id,
+                document_version,
+                index_revision,
+                expected_point_count,
+            )
+        except Exception:
+            self._rollback_after_activation_failure(
+                organization_id, wiki_id, document_id, current
+            )
+            raise
+        return ActivationResult(
+            True,
+            document_version,
+            "activated",
+            deactivated,
+            index_revision,
+        )
 
     def _search_filter(
         self, organization_id: str, wiki_id: str, filters: SearchFilters

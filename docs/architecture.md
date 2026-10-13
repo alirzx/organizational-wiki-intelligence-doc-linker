@@ -16,27 +16,32 @@ POST /api/v1/documents/index-ready
   -> CanonicalDocument / CanonicalContent
   -> SemanticChunker
   -> BGE-M3 document embedding (1024 dense + learned sparse)
-  -> QdrantStore.upsert(version_state=inactive)
-  -> delete_obsolete_points(same document_version only)
-  -> count_document_version verification
-  -> QdrantStore.activate_version numeric guard
+  -> QdrantStore.upsert(shadow index_revision, version_state=inactive)
+  -> delete_obsolete_points(same candidate revision only)
+  -> count_revision verification
+  -> QdrantStore.activate_version numeric guard + revision switch
+  -> single-active-revision/count post-condition verification
   -> version-scoped Linking audit
   -> succeeded job + Backend callback
 ```
 
 The lock covers verification and activation. It prevents concurrent changes, while the numeric comparison against Qdrant's currently active version prevents sequential late workers from downgrading search state.
 
+## Published identity and internal revision
+
+Backend identity remains `(document_id, document_version)`. Stage 3 assigns `index_revision=job_id` internally and includes it in deterministic point identity. A Celery retry uses the same job and revision; a new accepted indexing job gets a new revision. The public request, callback correlation, MinIO snapshot path, and version audit path do not require or expose this as Backend identity.
+
 ## Activation invariant
 
-The candidate is inactive until all points are written and the exact version count is verified. Activation uses ordered Qdrant payload operations: candidate points become active first, then other active versions become inactive. Historical points are relabeled, not deleted.
+The candidate is inactive until all points are written and its exact revision count is verified. Active state is the tuple `(document_version, index_revision)`, and inspection rejects multiple distinct active tuples instead of choosing the largest version. Activation uses ordered Qdrant payload operations, then explicitly verifies that exactly one complete candidate revision is active. Qdrant ordered writes are not treated as a transaction: an operation or post-condition failure marks the candidate inactive, restores the exact prior version/revision, verifies restoration, and raises. A failed restoration is a critical indexing error and cannot produce a success callback.
 
 ```text
-active=v2, candidate=v3 succeeds  -> v2 inactive, v3 active
-active=v2, candidate=v3 fails     -> v2 remains active, v3 inactive/partial
-active=v3, delayed candidate=v2   -> v3 remains active, v2 inactive
+active=v2/rev-A, candidate=v3/rev-B succeeds -> only v3/rev-B active
+active=v3/rev-A, candidate=v3/rev-B fails    -> v3/rev-A remains active
+active=v3/rev-X, delayed v2/rev-Y             -> v3/rev-X remains active
 ```
 
-`replace_existing=false` leaves a newer candidate inactive when another version is already active. The first successfully verified version becomes active even with no prior active version. Re-indexing the exact same version retains same-version obsolete-point cleanup.
+`replace_existing=false` leaves a candidate inactive when another revision is active. The first successfully verified version becomes active even with no prior active version. Cleanup and verification are scoped to the shadow revision, so a same-version candidate cannot overwrite or delete the searchable revision before activation.
 
 ## Retrieval graph
 

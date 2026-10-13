@@ -17,6 +17,8 @@ documents/{document_id}/versions/v{document_version}/document.json
 
 Stage 3 never writes, mutates, or deletes objects under `documents/{document_id}/versions/`. Legacy Stage-2 JSON/DOCX/Markdown adapters remain in the codebase for migration/tests, but the public indexing contract does not route to them.
 
+Each indexing job also has an internal `index_revision` equal to its durable `job_id`. This value is not part of the Backend identity or request contract. It lets Stage 3 build a shadow revision when the same published version is indexed again.
+
 ## Index lifecycle
 
 Indexing is asynchronous and idempotent:
@@ -27,15 +29,16 @@ stat + capture accepted ETag
 -> parse published snapshot
 -> semantic chunking
 -> BGE-M3 dense + learned sparse embeddings
--> upsert candidate version_state=inactive
--> remove obsolete chunks only in that same version
--> verify point count
+-> upsert candidate (document_version, index_revision) as version_state=inactive
+-> remove obsolete chunks only in that candidate revision
+-> verify the candidate revision point count
 -> numeric late-job guard
--> activate candidate and mark other active versions inactive
+-> activate candidate and mark other active revisions inactive
+-> verify exactly one active revision and its complete point count
 -> audit + callback
 ```
 
-Historical points remain in Qdrant. For example, after publishing v1, v2, and v3, v1/v2 are `inactive` and preserved while v3 is `active`. A failed v3 leaves v2 active. A delayed v1/v2 worker cannot downgrade active v3. `replace_existing=true` changes active search state after verification; it never means deleting historical MinIO or Qdrant versions.
+Historical published versions remain in Qdrant. For example, after publishing v1, v2, and v3, v1/v2 are `inactive` and preserved while one internal revision of v3 is `active`. A failed v3 leaves v2 active, and a failed shadow re-index of active v3 leaves the prior v3 revision searchable. A delayed v1/v2 worker cannot downgrade active v3. `replace_existing=true` changes active search state after verification; it never means deleting historical MinIO or Qdrant versions.
 
 Normal search always filters `version_state=active`, then applies tenant and Backend-supplied document/tag/language/visibility/ACL filters. The RAG core remains BGE-M3 (1024 dense dimensions plus sparse lexical weights), Qdrant hybrid retrieval with RRF, and `BAAI/bge-reranker-v2-m3`.
 
@@ -64,7 +67,7 @@ documents/{document_id}/Linking/
   jobs/{job_id}/failure.json
 ```
 
-Qdrant is the live search store. Audit JSON contains no vectors.
+Qdrant is the live search store. Audit JSON contains no vectors. Manifests record the internal revision for reproducibility, but revision IDs never appear in the public version path.
 
 ## Run and verify
 

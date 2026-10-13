@@ -61,8 +61,12 @@ class RetrievalService:
                 content_order=int(p.get("content_order") or p.get("section_order") or 0),
                 source_metadata=dict(p.get("source_metadata") or {}),
                 section_id=p.get("section_id"),
-                section_type_id=p.get("section_type_id"), section_title=str(p.get("section_title") or ""),
-                section_order=int(p.get("section_order") or 0),
+                section_type_id=p.get("section_type_id"), section_title=p.get("section_title"),
+                section_order=(
+                    int(p["section_order"])
+                    if p.get("section_order") is not None
+                    else None
+                ),
                 section_confidence=p.get("section_confidence"),
                 section_classifier=p.get("section_classifier"),
                 page_start=p.get("page_start"), page_end=p.get("page_end"),

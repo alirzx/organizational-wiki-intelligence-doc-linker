@@ -92,6 +92,7 @@ class ChunkRecord:
     organization_id: str
     wiki_id: str
     document_version: str
+    index_revision: str
     document_title: str
     source_filename: str | None
     language: str | None
@@ -130,11 +131,12 @@ class ChunkRecord:
         indexed_at: str,
         version_state: str,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "organization_id": self.organization_id,
             "wiki_id": self.wiki_id,
             "document_id": self.document_id,
             "document_version": self.document_version,
+            "index_revision": self.index_revision,
             "version_state": version_state,
             "document_title": self.document_title,
             "source_filename": self.source_filename,
@@ -152,18 +154,6 @@ class ChunkRecord:
             "content_title": self.content_title,
             "content_order": self.content_order,
             "source_metadata": self.source_metadata,
-            # Optional compatibility provenance for legacy Stage-2 artifacts.
-            "stage2_job_id": self.stage2_job_id,
-            "stage2_pipeline_version": self.stage2_pipeline_version,
-            "section_id": self.content_id,
-            "section_type_id": self.section_type_id,
-            "section_title": self.content_title,
-            "section_order": self.content_order,
-            "page_start": self.page_start,
-            "page_end": self.page_end,
-            "source_blocks": list(self.source_blocks),
-            "section_confidence": self.section_confidence,
-            "section_classifier": self.section_classifier,
             "chunk_index": self.chunk_index,
             "text": self.text,
             "content_hash": self.content_hash,
@@ -173,6 +163,21 @@ class ChunkRecord:
             "indexed_at": indexed_at,
             "document_metadata": self.document_metadata,
         }
+        if self.source_kind == "legacy_stage2":
+            payload.update({
+                "stage2_job_id": self.stage2_job_id,
+                "stage2_pipeline_version": self.stage2_pipeline_version,
+                "section_id": self.content_id,
+                "section_type_id": self.section_type_id,
+                "section_title": self.content_title,
+                "section_order": self.content_order,
+                "page_start": self.page_start,
+                "page_end": self.page_end,
+                "source_blocks": list(self.source_blocks),
+                "section_confidence": self.section_confidence,
+                "section_classifier": self.section_classifier,
+            })
+        return payload
 
 
 @dataclass(frozen=True)

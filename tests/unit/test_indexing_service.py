@@ -7,7 +7,7 @@ from app.core.config import Settings
 from app.models.embedding import MockEmbeddingService
 from app.services.indexer import IndexingService
 from app.storage.minio_store import ObjectSnapshot
-from app.vector.qdrant_store import ActivationResult
+from app.vector.qdrant_store import ActivationResult, ActiveRevision
 
 
 def payload(version: str = "2") -> dict:
@@ -33,10 +33,10 @@ def payload(version: str = "2") -> dict:
 
 
 class FakeJobs:
-    def __init__(self, request_payload=None):
+    def __init__(self, request_payload=None, *, job_id="job-1"):
         request_payload = request_payload or payload()
         self.job = {
-            "job_id": "job-1",
+            "job_id": job_id,
             "document_id": request_payload["document_id"],
             "document_version": request_payload["document_version"],
             "status": "queued",
@@ -94,7 +94,10 @@ class FakeVector:
     def __init__(self, *, fail_at=None):
         self.fail_at = fail_at
         self.active = "1"
+        self.active_revision = "rev-old"
         self.upsert_state = None
+        self.upsert_states = []
+        self.index_revisions = []
         self.activation_calls = 0
         self.chunk_count = 0
 
@@ -105,21 +108,40 @@ class FakeVector:
         if self.fail_at == "upsert":
             raise RuntimeError("qdrant upsert failed")
         self.upsert_state = kwargs["version_state"]
+        self.upsert_states.append(self.upsert_state)
+        self.index_revisions.append({chunk.chunk.index_revision for chunk in chunks})
         self.chunk_count = len(chunks)
+
+    def get_active_state(self, *_args):
+        if self.active is None:
+            return None
+        return ActiveRevision(self.active, self.active_revision, self.chunk_count or 1)
 
     def delete_obsolete_points(self, *_args):
         return 0
 
-    def count_document_version(self, *_args):
+    def count_revision(self, *_args):
         if self.fail_at == "verify":
             return 0
         return self.chunk_count
 
-    def activate_version(self, _org, _wiki, _document, version, *, replace_existing):
+    def activate_version(
+        self,
+        _org,
+        _wiki,
+        _document,
+        version,
+        index_revision,
+        *,
+        replace_existing,
+        expected_point_count,
+    ):
         self.activation_calls += 1
         assert replace_existing
+        assert expected_point_count == self.chunk_count
         self.active = version
-        return ActivationResult(True, version, "activated", 1)
+        self.active_revision = index_revision
+        return ActivationResult(True, version, "activated", 1, index_revision)
 
 
 class FakeCallbacks:
@@ -179,6 +201,8 @@ def test_indexing_lifecycle_verifies_before_activation_and_emits_correlated_call
     ]
     assert storage.expected_etag == "etag-2"
     assert result["result"]["activated"] is True
+    assert result["result"]["index_revision"] == "job-1"
+    assert result["result"]["active_index_revision"] == "job-1"
     callback = callbacks.payloads[-1]
     assert callback["job_id"] == "job-1"
     assert callback["document_id"] == "64"
@@ -188,6 +212,12 @@ def test_indexing_lifecycle_verifies_before_activation_and_emits_correlated_call
     assert "documents/64/Linking/versions/v2/chunks.json" in uploaded_keys
     assert "documents/64/Linking/versions/v2/index-manifest.json" in uploaded_keys
     assert all(not key.startswith("documents/64/versions/") for key in uploaded_keys)
+
+    manifest = next(
+        data for _bucket, key, data in storage.uploads
+        if key.endswith("index-manifest.json")
+    )
+    assert manifest["index-revision"] == "job-1"
 
 
 @pytest.mark.parametrize("failure", ["upsert", "verify"])
@@ -208,6 +238,21 @@ def test_callback_failure_does_not_roll_back_successful_activation():
     assert result["status"] == "succeeded"
     assert result["callback_delivered"] is False
     assert jobs.job["result"]["active_version"] == "2"
+
+
+def test_retry_reuses_job_id_as_revision_and_new_job_uses_new_revision():
+    vector = FakeVector()
+    indexer, _jobs, _storage, vector, _callbacks = service(vector=vector)
+    indexer.process("job-1")
+    indexer.process("job-1")
+
+    assert vector.index_revisions == [{"job-1"}, {"job-1"}]
+    assert vector.upsert_states == ["inactive", "active"]
+
+    new_jobs = FakeJobs(job_id="job-2")
+    new_indexer, *_ = service(vector=vector, jobs=new_jobs)
+    new_indexer.process("job-2")
+    assert vector.index_revisions[-1] == {"job-2"}
 
 
 def test_failure_callback_contains_job_document_version_and_error():

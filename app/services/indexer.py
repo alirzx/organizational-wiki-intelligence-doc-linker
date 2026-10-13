@@ -37,7 +37,7 @@ class IndexingService:
     def _write_success_audit(
         self, job_id: str, request: IndexReadyRequest, chunks, *,
         artifact_snapshot, timings: dict[str, float], deleted_obsolete: int,
-        activation,
+        activation, index_revision: str,
     ) -> list[str]:
         root = self._audit_root(request.document_id)
         version_root = f"{root}/versions/v{request.document_version}"
@@ -45,11 +45,13 @@ class IndexingService:
             "schema-version": "1.0",
             "document-id": request.document_id,
             "document-version": request.document_version,
+            "index-revision": index_revision,
             "organization-id": request.organization_id,
             "wiki-id": request.wiki_id,
             "chunks": [
                 {
                     "point-id": item.point_id, "content-id": item.content_id,
+                    "index-revision": item.index_revision,
                     "content-type": item.content_type, "content-title": item.content_title,
                     "content-order": item.content_order,
                     "chunk-index": item.chunk_index, "page-start": item.page_start,
@@ -65,7 +67,9 @@ class IndexingService:
             "schema-version": "1.0", "pipeline-version": self.settings.pipeline_version,
             "chunker-version": self.settings.chunker_version, "status": "succeeded",
             "job-id": job_id, "document-id": request.document_id,
-            "document-version": request.document_version, "organization-id": request.organization_id,
+            "document-version": request.document_version,
+            "index-revision": index_revision,
+            "organization-id": request.organization_id,
             "wiki-id": request.wiki_id, "collection": self.settings.qdrant_collection,
             "embedding-model": self.settings.embedding_model, "reranker-model": self.settings.reranker_model,
             "artifact": {
@@ -76,6 +80,7 @@ class IndexingService:
             "activation": {
                 "activated": activation.activated,
                 "active-version": activation.active_version,
+                "active-index-revision": activation.active_index_revision,
                 "reason": activation.reason,
                 "deactivated-points": activation.deactivated_points,
             },
@@ -99,6 +104,7 @@ class IndexingService:
                 {
                     "event": "document-linking-failed", "status": "failed", "job-id": job_id,
                     "document-id": request.document_id, "document-version": request.document_version,
+                    "index-revision": job_id,
                     "error": {"type": type(exc).__name__, "message": str(exc)[:1000]},
                     "failure-time": utc_now(),
                 },
@@ -137,6 +143,8 @@ class IndexingService:
         started = time.perf_counter()
         timings: dict[str, float] = {}
         try:
+            index_revision = job_id
+            self.jobs.update(job_id, index_revision=index_revision)
             self.jobs.update(job_id, status="downloading")
             phase = time.perf_counter()
             artifact, snapshot = self.storage.download_verified(
@@ -164,7 +172,9 @@ class IndexingService:
 
             self.jobs.update(job_id, status="chunking")
             phase = time.perf_counter()
-            chunks = SemanticChunker(self.settings, self.embedder).chunk(document)
+            chunks = SemanticChunker(self.settings, self.embedder).chunk(
+                document, index_revision=index_revision
+            )
             if not chunks:
                 raise ValueError("No chunks were generated from the published snapshot")
             timings["chunking_seconds"] = round(time.perf_counter() - phase, 6)
@@ -191,21 +201,33 @@ class IndexingService:
             self.jobs.update(job_id, status="indexing")
             phase = time.perf_counter()
             self.vector.ensure_collection()
+            active_before = self.vector.get_active_state(
+                request.organization_id, request.wiki_id, request.document_id
+            )
+            retrying_active_revision = active_before is not None and (
+                active_before.document_version == request.document_version
+                and active_before.index_revision == index_revision
+            )
             indexed_at = utc_now()
             self.vector.upsert(
                 embedded, embedding_model=self.settings.embedding_model,
                 chunker_version=self.settings.chunker_version, indexed_at=indexed_at,
-                version_state="inactive",
+                version_state="active" if retrying_active_revision else "inactive",
             )
             obsolete = self.vector.delete_obsolete_points(
                 request.organization_id, request.wiki_id, request.document_id,
-                request.document_version, [item.point_id for item in chunks],
+                request.document_version, index_revision,
+                [item.point_id for item in chunks],
             )
 
             # Verify the new revision before removing any previously searchable version.
             self.jobs.update(job_id, status="verifying")
-            current_count = self.vector.count_document_version(
-                request.organization_id, request.wiki_id, request.document_id, request.document_version
+            current_count = self.vector.count_revision(
+                request.organization_id,
+                request.wiki_id,
+                request.document_id,
+                request.document_version,
+                index_revision,
             )
             if current_count != len(chunks):
                 raise RuntimeError(f"Qdrant verification failed: expected {len(chunks)}, got {current_count}")
@@ -215,7 +237,9 @@ class IndexingService:
                 request.wiki_id,
                 request.document_id,
                 request.document_version,
+                index_revision,
                 replace_existing=request.replace_existing,
+                expected_point_count=len(chunks),
             )
             timings["qdrant_seconds"] = round(time.perf_counter() - phase, 6)
             timings["total_seconds"] = round(time.perf_counter() - started, 6)
@@ -227,6 +251,7 @@ class IndexingService:
                     audit_outputs = self._write_success_audit(
                         job_id, request, chunks, artifact_snapshot=snapshot, timings=timings,
                         deleted_obsolete=obsolete, activation=activation,
+                        index_revision=index_revision,
                     )
                 except Exception as exc:
                     audit_error = str(exc)[:500]
@@ -234,6 +259,7 @@ class IndexingService:
 
             result = {
                 "document_id": request.document_id, "document_version": request.document_version,
+                "index_revision": index_revision,
                 "organization_id": request.organization_id, "wiki_id": request.wiki_id,
                 "collection": self.settings.qdrant_collection, "chunk_count": len(chunks),
                 "deleted_obsolete_points": obsolete,
@@ -241,6 +267,7 @@ class IndexingService:
                 "artifact_etag": snapshot.etag,
                 "activated": activation.activated,
                 "active_version": activation.active_version,
+                "active_index_revision": activation.active_index_revision,
                 "activation_reason": activation.reason,
                 "deactivated_points": activation.deactivated_points,
                 "audit_outputs": audit_outputs, "audit_error": audit_error, "timings": timings,

@@ -24,9 +24,13 @@ def test_chunk_ids_are_deterministic():
     )
     chunker = SemanticChunker(settings, MockEmbeddingService(settings))
     doc = build_doc("First sentence with several words for realistic token sizing. " * 80 + "\n\n" + "Second semantic topic with enough repeated content. " * 80)
-    a = chunker.chunk(doc)
-    b = chunker.chunk(doc)
+    a = chunker.chunk(doc, index_revision="job-1")
+    b = chunker.chunk(doc, index_revision="job-1")
     assert [x.point_id for x in a] == [x.point_id for x in b]
     assert len(a) > 1
     assert all(x.token_count <= settings.chunk_max_tokens for x in a)
     assert all(x.content_id == "content-001" for x in a)
+
+    next_revision = chunker.chunk(doc, index_revision="job-2")
+    assert [x.point_id for x in a] != [x.point_id for x in next_revision]
+    assert all(x.index_revision == "job-1" for x in a)

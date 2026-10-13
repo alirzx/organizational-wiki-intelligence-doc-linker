@@ -88,11 +88,11 @@ The first start can be slow because `model-cache` downloads both model snapshots
 
 Qdrant is intentionally different from Redis: it is a dedicated Stage-3 service because both API/search and Celery/indexing need one concurrent, persistent vector store. `doc-linker-qdrant` stores vectors in the `doc_linker_qdrant` named volume and stays private on `wikio`; its port is not published to the host by default.
 
-The Qdrant collection (`wiki_chunks_v1` by default) and payload indexes are created/validated by the application. Candidates are upserted with `version_state=inactive`; after verification, an ordered payload update makes the candidate active and other active versions inactive. Historical version points remain stored. Only the explicit Backend delete operation removes points.
+The Qdrant collection (`wiki_chunks_v1` by default) and payload indexes are created/validated by the application. Candidates are upserted with an internal `index_revision` and `version_state=inactive`; after revision-scoped verification, ordered payload updates switch active state and a post-condition check proves there is exactly one complete active revision. Historical published-version points remain stored. Only the explicit Backend delete operation removes a published version.
 
 ### One-time `version_state` migration
 
-Existing points created before this lifecycle do not contain `version_state` and will no longer appear in normal active-only search until migrated. Run the explicit script once during rollout. It groups by organization/wiki/document, selects the latest positive numeric surviving version, marks every version inactive, and then activates that latest version.
+Existing points created before this lifecycle may lack `version_state` and `index_revision`, so they will not appear in normal active-only search until migrated. The migration never creates a missing collection and never guesses that the highest numeric version is valid. It preserves a valid sole active revision, safely activates a document with exactly one valid published version, and reports multiple versions without trustworthy active state as `ambiguous-multiple-versions`. Ambiguous documents require an operator map. Missing legacy revisions are assigned deterministic values such as `legacy-v2`; existing valid revisions are preserved.
 
 ```bash
 # read-only report (default)
@@ -100,9 +100,26 @@ docker compose run --rm api python -m scripts.migrate_active_versions
 
 # apply after reviewing the report
 docker compose run --rm api python -m scripts.migrate_active_versions --apply
+
+# resolve ambiguous documents with an explicit reviewed map
+docker compose run --rm api python -m scripts.migrate_active_versions \
+  --active-map /config/active_versions.json --apply
 ```
 
-The migration is idempotent and is intentionally not run at application startup.
+The mapping file is a JSON array and uses Backend `Document.id`, never `WikiDocument.id`:
+
+```json
+[
+  {
+    "organization_id": "org-1",
+    "wiki_id": "wiki-main",
+    "document_id": "64",
+    "document_version": "2"
+  }
+]
+```
+
+Every field is required; extra fields, duplicate document identities, missing documents, non-positive versions, and versions absent from Qdrant are rejected. Dry-run is the default and performs no payload writes. Its per-document report includes tenant/wiki/document identity, discovered versions, current active state, proposed active version/revision, status, reason, whether an explicit version is required, and whether anything was applied. `multiple-active-corruption` is reported without automatically selecting a winner. The migration is intentionally not run at application startup.
 
 ## Persistent state
 

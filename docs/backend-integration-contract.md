@@ -17,6 +17,8 @@ Stage 1 -> Stage 2 -> Backend editable wiki document
 
 Backend must preserve every published snapshot. Stage 3 only reads `document.json` and writes audit data under `Linking/`.
 
+Backend identity is `(document_id, document_version)`. Stage 3 privately tracks `(document_version, index_revision)`, with `index_revision=job_id`, so a same-version re-index can be built and verified without disturbing the searchable revision. Backend does not supply or interpret this internal value.
+
 ## Index request
 
 ```http
@@ -53,11 +55,12 @@ The response includes job/document/version correlation. Backend can poll `GET /a
 ## Active version behavior
 
 - First verified version becomes active.
-- A verified newer version becomes active only after point-count verification.
+- A verified candidate becomes active only after revision-scoped point-count verification.
 - Previous versions become inactive and remain stored.
-- A failed version never deactivates the current active version.
+- A failed new version or same-version shadow revision never deactivates the current active revision.
 - A delayed older worker compares numeric versions and cannot reactivate itself over a newer active version.
 - `replace_existing=false` indexes a candidate as inactive if another active version exists.
+- After a switch, Stage 3 verifies that exactly one complete `(document_version, index_revision)` is active and restores the prior tuple if validation fails.
 
 Backend callback ordering is therefore not responsible for protecting Qdrant search state; Stage 3 enforces the guard before callback delivery.
 

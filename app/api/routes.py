@@ -84,8 +84,9 @@ def index_ready(
         request.organization_id, request.wiki_id, request.document_id, request.document_version,
         str(generation), settings.pipeline_version, settings.chunker_version,
         settings.embedding_model, request.artifact.object_key,
-        request.artifact.sha256 or live_artifact.etag or "unknown",
-        str(live_artifact.size),
+        f"sha256={request.artifact.sha256 or ''}",
+        f"etag={live_artifact.etag or ''}",
+        f"size={live_artifact.size}",
         str(request.replace_existing),
     ])
     identity = "index:" + hashlib.sha256(identity_seed.encode()).hexdigest()

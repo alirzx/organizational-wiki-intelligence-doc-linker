@@ -5,24 +5,26 @@ from qdrant_client import QdrantClient
 
 from app.api.schemas import SearchFilters
 from app.core.config import Settings
+from app.core.ids import stable_point_id
 from app.models.domain import ChunkRecord, EmbeddedChunk
-from app.vector.qdrant_store import QdrantStore
-
-POINT_IDS = {
-    "1": "11111111-1111-4111-8111-111111111111",
-    "2": "22222222-2222-4222-8222-222222222222",
-    "3": "33333333-3333-4333-8333-333333333333",
-    "3b": "44444444-4444-4444-8444-444444444444",
-}
+from app.vector.qdrant_store import ActiveStateInvariantError, QdrantStore
 
 
-def _chunk(version: str, text: str, *, point_key: str | None = None) -> EmbeddedChunk:
+def _chunk(
+    version: str,
+    text: str,
+    *,
+    revision: str,
+    point_key: str | None = None,
+    source_kind: str = "published_snapshot",
+) -> EmbeddedChunk:
     record = ChunkRecord(
-        point_id=POINT_IDS[point_key or version],
+        point_id=stable_point_id(version, revision, point_key or text),
         document_id="doc-1",
         organization_id="org-1",
         wiki_id="wiki-1",
         document_version=version,
+        index_revision=revision,
         document_title="Test document",
         source_filename="source.pdf",
         language="fa",
@@ -33,20 +35,20 @@ def _chunk(version: str, text: str, *, point_key: str | None = None) -> Embedded
         artifact_key=f"documents/doc-1/versions/v{version}/document.json",
         artifact_sha256=("a" if version == "1" else "b") * 64,
         artifact_etag=f"etag-{version}",
-        source_kind="published_snapshot",
+        source_kind=source_kind,
         content_id="backend-content-1",
         content_type="section",
         content_title="Process",
         content_order=1,
         source_metadata={},
-        stage2_job_id=None,
-        stage2_pipeline_version=None,
-        section_type_id=None,
-        page_start=None,
-        page_end=None,
-        source_blocks=(),
-        section_confidence=None,
-        section_classifier=None,
+        stage2_job_id="stage2-job" if source_kind == "legacy_stage2" else None,
+        stage2_pipeline_version="2.0" if source_kind == "legacy_stage2" else None,
+        section_type_id=4 if source_kind == "legacy_stage2" else None,
+        page_start=1 if source_kind == "legacy_stage2" else None,
+        page_end=2 if source_kind == "legacy_stage2" else None,
+        source_blocks=(3,) if source_kind == "legacy_stage2" else (),
+        section_confidence=0.9 if source_kind == "legacy_stage2" else None,
+        section_classifier="legacy" if source_kind == "legacy_stage2" else None,
         chunk_index=0,
         text=text,
         content_hash=("c" if version == "1" else "d") * 64,
@@ -72,13 +74,37 @@ def _store() -> QdrantStore:
     return store
 
 
-def _upsert(store: QdrantStore, chunks: list[EmbeddedChunk]) -> None:
+def _upsert(
+    store: QdrantStore,
+    chunks: list[EmbeddedChunk],
+    *,
+    state: str = "inactive",
+) -> None:
     store.upsert(
         chunks,
         embedding_model="test",
         chunker_version="test",
         indexed_at="2026-09-26T00:00:00Z",
-        version_state="inactive",
+        version_state=state,
+    )
+
+
+def _activate(store: QdrantStore, chunk: EmbeddedChunk, *, replace: bool = True):
+    record = chunk.chunk
+    return store.activate_version(
+        record.organization_id,
+        record.wiki_id,
+        record.document_id,
+        record.document_version,
+        record.index_revision,
+        replace_existing=replace,
+        expected_point_count=store.count_revision(
+            record.organization_id,
+            record.wiki_id,
+            record.document_id,
+            record.document_version,
+            record.index_revision,
+        ),
     )
 
 
@@ -96,60 +122,88 @@ def _search_texts(store: QdrantStore) -> list[str]:
     return [str(point.payload["text"]) for point in points]
 
 
-def test_published_version_lifecycle_preserves_history_and_searches_only_active():
+def test_published_version_lifecycle_preserves_history_and_blocks_late_version():
     store = _store()
+    v1 = _chunk("1", "version one", revision="rev-v1")
+    v2 = _chunk("2", "version two", revision="rev-v2")
+    v3 = _chunk("3", "version three", revision="rev-v3")
 
-    _upsert(store, [_chunk("1", "version one")])
-    assert _search_texts(store) == []
-    first = store.activate_version("org-1", "wiki-1", "doc-1", "1", replace_existing=True)
-    assert first.activated
+    _upsert(store, [v1])
+    assert _activate(store, v1).activated
+    _upsert(store, [v2])
     assert _search_texts(store) == ["version one"]
+    assert _activate(store, v2).activated
+    _upsert(store, [v3])
+    assert _activate(store, v3).activated
 
-    _upsert(store, [_chunk("2", "version two")])
-    assert _search_texts(store) == ["version one"]
-    second = store.activate_version("org-1", "wiki-1", "doc-1", "2", replace_existing=True)
-    assert second.activated
-    assert store.count_document("org-1", "wiki-1", "doc-1", "1") == 1
-    assert store.count_document("org-1", "wiki-1", "doc-1", "2") == 1
-    assert _search_texts(store) == ["version two"]
-
-    # Failed v3 is preserved inactive; v2 stays searchable.
-    _upsert(store, [_chunk("3", "failed version three")])
-    assert store.count_document("org-1", "wiki-1", "doc-1", "3") == 1
-    assert _search_texts(store) == ["version two"]
-
-    third = store.activate_version("org-1", "wiki-1", "doc-1", "3", replace_existing=True)
-    assert third.activated
-    assert _search_texts(store) == ["failed version three"]
     assert store.count_document("org-1", "wiki-1", "doc-1") == 3
+    assert _search_texts(store) == ["version three"]
 
-    # A delayed older completion remains historical and cannot downgrade v3.
-    _upsert(store, [_chunk("2", "late version two")])
-    late = store.activate_version("org-1", "wiki-1", "doc-1", "2", replace_existing=True)
+    late_v2 = _chunk("2", "late version two", revision="rev-v2-late")
+    _upsert(store, [late_v2])
+    late = _activate(store, late_v2)
     assert not late.activated
     assert late.active_version == "3"
+    assert late.active_index_revision == "rev-v3"
     assert late.reason == "newer-version-already-active"
-    assert _search_texts(store) == ["failed version three"]
+    assert _search_texts(store) == ["version three"]
 
 
-def test_same_version_cleanup_only_removes_obsolete_points_from_that_version():
+def test_same_version_shadow_candidate_failure_and_success_preserve_history():
     store = _store()
-    _upsert(store, [_chunk("1", "one"), _chunk("2", "two")])
-    _upsert(store, [_chunk("3", "three"), _chunk("3", "obsolete", point_key="3b")])
-    removed = store.delete_obsolete_points(
-        "org-1", "wiki-1", "doc-1", "3", [POINT_IDS["3"]]
-    )
-    assert removed == 1
+    v1 = _chunk("1", "version one", revision="rev-v1")
+    v2 = _chunk("2", "version two", revision="rev-v2")
+    rev_a = _chunk("3", "revision A", revision="rev-A")
+    for chunk in (v1, v2, rev_a):
+        _upsert(store, [chunk])
+        _activate(store, chunk)
+    assert _search_texts(store) == ["revision A"]
+
+    rev_b = _chunk("3", "revision B failed", revision="rev-B")
+    _upsert(store, [rev_b])
+    assert _search_texts(store) == ["revision A"]
+    with pytest.raises(ActiveStateInvariantError, match="Candidate point count"):
+        store.activate_version(
+            "org-1", "wiki-1", "doc-1", "3", "rev-B",
+            replace_existing=True, expected_point_count=2,
+        )
+    assert _search_texts(store) == ["revision A"]
+
+    rev_c = _chunk("3", "revision C", revision="rev-C")
+    _upsert(store, [rev_c])
+    switched = _activate(store, rev_c)
+    assert switched.activated
+    assert switched.active_index_revision == "rev-C"
+    assert _search_texts(store) == ["revision C"]
     assert store.count_document("org-1", "wiki-1", "doc-1", "1") == 1
     assert store.count_document("org-1", "wiki-1", "doc-1", "2") == 1
-    assert store.count_document("org-1", "wiki-1", "doc-1", "3") == 1
+    assert store.count_revision("org-1", "wiki-1", "doc-1", "3", "rev-A") == 1
 
 
-def test_activation_update_failure_restores_previous_active_version(monkeypatch):
+def test_cleanup_only_removes_obsolete_points_from_candidate_revision():
     store = _store()
-    _upsert(store, [_chunk("1", "one")])
-    store.activate_version("org-1", "wiki-1", "doc-1", "1", replace_existing=True)
-    _upsert(store, [_chunk("2", "two")])
+    active = _chunk("3", "active", revision="rev-A")
+    keep = _chunk("3", "keep", revision="rev-B", point_key="keep")
+    obsolete = _chunk("3", "obsolete", revision="rev-B", point_key="obsolete")
+    _upsert(store, [active])
+    _activate(store, active)
+    _upsert(store, [keep, obsolete])
+
+    removed = store.delete_obsolete_points(
+        "org-1", "wiki-1", "doc-1", "3", "rev-B", [keep.chunk.point_id]
+    )
+    assert removed == 1
+    assert store.count_revision("org-1", "wiki-1", "doc-1", "3", "rev-A") == 1
+    assert _search_texts(store) == ["active"]
+
+
+def test_activation_operation_failure_restores_previous_active_revision(monkeypatch):
+    store = _store()
+    previous = _chunk("1", "one", revision="rev-A")
+    candidate = _chunk("2", "two", revision="rev-B")
+    _upsert(store, [previous])
+    _activate(store, previous)
+    _upsert(store, [candidate])
 
     original = store.client.batch_update_points
     calls = 0
@@ -158,35 +212,141 @@ def test_activation_update_failure_restores_previous_active_version(monkeypatch)
         nonlocal calls
         calls += 1
         if calls == 1:
-            first_operation = kwargs["update_operations"][:1]
-            original(*args, **{**kwargs, "update_operations": first_operation})
+            original(*args, **{**kwargs, "update_operations": kwargs["update_operations"][:1]})
             raise RuntimeError("simulated activation failure")
         return original(*args, **kwargs)
 
     monkeypatch.setattr(store.client, "batch_update_points", partially_failing_batch)
     with pytest.raises(RuntimeError, match="activation failure"):
-        store.activate_version("org-1", "wiki-1", "doc-1", "2", replace_existing=True)
+        _activate(store, candidate)
+    active = store.get_active_state("org-1", "wiki-1", "doc-1")
+    assert active is not None
+    assert (active.document_version, active.index_revision) == ("1", "rev-A")
+    assert _search_texts(store) == ["one"]
+
+
+def test_zero_active_partial_failure_is_repaired(monkeypatch):
+    store = _store()
+    previous = _chunk("1", "one", revision="rev-A")
+    candidate = _chunk("2", "two", revision="rev-B")
+    _upsert(store, [previous])
+    _activate(store, previous)
+    _upsert(store, [candidate])
+
+    original = store.client.batch_update_points
+    calls = 0
+
+    def deactivate_then_fail(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            original(*args, **{**kwargs, "update_operations": kwargs["update_operations"][1:]})
+            raise RuntimeError("zero active during switch")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store.client, "batch_update_points", deactivate_then_fail)
+    with pytest.raises(RuntimeError, match="zero active"):
+        _activate(store, candidate)
     assert store.get_active_version("org-1", "wiki-1", "doc-1") == "1"
     assert _search_texts(store) == ["one"]
 
 
-def test_replacement_disabled_preserves_current_active_version():
+def test_post_activation_invariant_failure_rolls_back(monkeypatch):
     store = _store()
-    _upsert(store, [_chunk("1", "one")])
-    store.activate_version("org-1", "wiki-1", "doc-1", "1", replace_existing=True)
-    _upsert(store, [_chunk("2", "two")])
-    result = store.activate_version(
-        "org-1", "wiki-1", "doc-1", "2", replace_existing=False
+    previous = _chunk("1", "one", revision="rev-A")
+    candidate = _chunk("2", "two", revision="rev-B")
+    _upsert(store, [previous])
+    _activate(store, previous)
+    _upsert(store, [candidate])
+
+    original = store.client.batch_update_points
+    calls = 0
+
+    def omit_deactivation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original(
+                *args,
+                **{**kwargs, "update_operations": kwargs["update_operations"][:1]},
+            )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store.client, "batch_update_points", omit_deactivation)
+    with pytest.raises(ActiveStateInvariantError, match="Multiple active"):
+        _activate(store, candidate)
+    assert store.get_active_version("org-1", "wiki-1", "doc-1") == "1"
+    assert _search_texts(store) == ["one"]
+
+
+def test_multiple_active_corruption_is_not_hidden_by_numeric_max():
+    store = _store()
+    first = _chunk("2", "two", revision="rev-A")
+    second = _chunk("3", "three", revision="rev-B")
+    _upsert(store, [first, second], state="active")
+    with pytest.raises(ActiveStateInvariantError, match="Multiple active"):
+        store.get_active_state("org-1", "wiki-1", "doc-1")
+    with pytest.raises(ActiveStateInvariantError, match="Multiple active"):
+        store.get_active_version("org-1", "wiki-1", "doc-1")
+
+
+def test_partially_active_revision_is_detected_as_corruption():
+    store = _store()
+    active = _chunk("3", "active point", revision="rev-A", point_key="active")
+    inactive = _chunk(
+        "3", "inactive point", revision="rev-A", point_key="inactive"
     )
+    _upsert(store, [active], state="active")
+    _upsert(store, [inactive], state="inactive")
+    with pytest.raises(ActiveStateInvariantError, match="partially active"):
+        store.get_active_state("org-1", "wiki-1", "doc-1")
+
+
+def test_replacement_disabled_preserves_current_active_revision():
+    store = _store()
+    first = _chunk("1", "one", revision="rev-A")
+    second = _chunk("2", "two", revision="rev-B")
+    _upsert(store, [first])
+    _activate(store, first)
+    _upsert(store, [second])
+    result = _activate(store, second, replace=False)
     assert not result.activated
     assert result.reason == "replacement-disabled"
-    assert store.get_active_version("org-1", "wiki-1", "doc-1") == "1"
+    assert result.active_index_revision == "rev-A"
     assert _search_texts(store) == ["one"]
+
+
+def test_published_payload_omits_fake_legacy_section_fields():
+    published = _chunk("1", "published", revision="rev-A")
+    payload = published.chunk.payload(
+        embedding_model="test",
+        chunker_version="test",
+        indexed_at="now",
+        version_state="inactive",
+    )
+    assert payload["content_id"] == "backend-content-1"
+    assert "section_id" not in payload
+    assert "section_title" not in payload
+    assert "section_order" not in payload
+
+    legacy = _chunk(
+        "1", "legacy", revision="legacy-v1", source_kind="legacy_stage2"
+    ).chunk.payload(
+        embedding_model="test",
+        chunker_version="test",
+        indexed_at="now",
+        version_state="inactive",
+    )
+    assert legacy["section_id"] == "backend-content-1"
+    assert legacy["section_title"] == "Process"
+    assert legacy["section_order"] == 1
 
 
 def test_explicit_document_delete_remains_independent():
     store = _store()
-    _upsert(store, [_chunk("1", "one"), _chunk("2", "two")])
+    first = _chunk("1", "one", revision="rev-A")
+    second = _chunk("2", "two", revision="rev-B")
+    _upsert(store, [first, second])
     assert store.delete_document("org-1", "wiki-1", "doc-1", "1") == 1
     assert store.count_document("org-1", "wiki-1", "doc-1", "1") == 0
     assert store.count_document("org-1", "wiki-1", "doc-1", "2") == 1

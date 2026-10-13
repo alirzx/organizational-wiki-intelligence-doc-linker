@@ -151,7 +151,11 @@ class SemanticChunker:
             if (text := "\n\n".join(item.text for item in group).strip())
         ]
 
-    def chunk(self, document: CanonicalDocument) -> list[ChunkRecord]:
+    def chunk(
+        self, document: CanonicalDocument, *, index_revision: str
+    ) -> list[ChunkRecord]:
+        if not index_revision:
+            raise ValueError("index_revision must not be empty")
         output: list[ChunkRecord] = []
         for content in document.contents:
             content_chunks = self._content_chunks(content)
@@ -163,12 +167,14 @@ class SemanticChunker:
                 )
                 point_id = stable_point_id(
                     document.organization_id, document.wiki_id, document.document_id,
-                    document.document_version, stable_content_identity, chunk_index, content_hash
+                    document.document_version, index_revision, stable_content_identity,
+                    chunk_index, content_hash,
                 )
                 output.append(ChunkRecord(
                     point_id=point_id, document_id=document.document_id,
                     organization_id=document.organization_id, wiki_id=document.wiki_id,
-                    document_version=document.document_version, document_title=document.title,
+                    document_version=document.document_version, index_revision=index_revision,
+                    document_title=document.title,
                     source_filename=document.source_filename, language=document.language,
                     tags=document.tags, visibility=document.visibility, acl_groups=document.acl_groups,
                     artifact_bucket=document.artifact_bucket, artifact_key=document.artifact_key,

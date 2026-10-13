@@ -47,7 +47,9 @@ HTTP 202:
 }
 ```
 
-A duplicate immutable identity reuses an existing non-failed job. Identity includes tenant/wiki/document/version, accepted artifact fingerprint and size, generation, pipeline/chunker versions, and embedding model. Failed jobs remain retryable.
+A duplicate immutable identity reuses an existing non-failed job. Identity independently includes the object key, accepted live ETag, supplied SHA256 when present, accepted size, tenant/wiki/document/version, generation, pipeline/chunker versions, embedding model, and replacement flag. Failed jobs remain retryable.
+
+Stage 3 uses the resulting `job_id` as an internal `index_revision`. Backend does not send this value and published identity remains `(document_id, document_version)`. The internal revision permits safe shadow re-indexing of the same published version.
 
 `replace_existing=true` means activate this verified version and deactivate the prior active search version. It never deletes a historical Qdrant version or any MinIO snapshot.
 
@@ -83,7 +85,7 @@ Published results expose generic references:
 }
 ```
 
-Legacy `section_*`, page, source-block, and classifier fields remain optional for older Stage-2-derived points. Stage 3 does not invent them for published snapshots.
+Legacy `section_*`, page, source-block, and classifier fields remain optional for older Stage-2-derived points. They remain null/absent for generic published content unless actual legacy Stage-2 provenance exists.
 
 ## DELETE /documents/{document_id}
 
