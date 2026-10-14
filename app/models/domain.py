@@ -83,7 +83,6 @@ class CanonicalDocument:
     language: str | None
     tags: tuple[str, ...]
     visibility: str
-    acl_groups: tuple[str, ...]
     artifact_bucket: str
     artifact_key: str
     artifact_sha256: str
@@ -115,7 +114,6 @@ class ChunkRecord:
     language: str | None
     tags: tuple[str, ...]
     visibility: str
-    acl_groups: tuple[str, ...]
     artifact_bucket: str
     artifact_key: str
     artifact_sha256: str
@@ -160,7 +158,6 @@ class ChunkRecord:
             "language": self.language,
             "tags": list(self.tags),
             "visibility": self.visibility,
-            "acl_groups": list(self.acl_groups),
             "artifact_bucket": self.artifact_bucket,
             "artifact_key": self.artifact_key,
             "artifact_sha256": self.artifact_sha256,
