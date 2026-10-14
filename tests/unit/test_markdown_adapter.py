@@ -5,7 +5,7 @@ from app.artifacts.markdown import MarkdownAdapter
 def test_markdown_removes_base64_images():
     context = AdapterContext(
         document_id="1", organization_id="o", wiki_id="w", document_version="1", title="D",
-        source_filename=None, language="fa", tags=(), visibility="internal", acl_groups=(),
+        source_filename=None, language="fa", tags=(), visibility="internal",
         artifact_bucket="media", artifact_key="documents/1/Sectioning/ocr/sections.md",
         artifact_sha256="b" * 64, artifact_etag=None,
     )
