@@ -37,7 +37,6 @@ class DocumentMetadata(BaseModel):
     language: str | None = Field(default=None, max_length=32)
     tags: list[str] = Field(default_factory=list, max_length=100)
     visibility: str = Field(default="internal", max_length=64)
-    acl_groups: list[str] = Field(default_factory=list, max_length=200)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -90,7 +89,6 @@ class SearchFilters(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=50)
     language: str | None = None
     visibility: list[str] = Field(default_factory=list, max_length=20)
-    acl_groups: list[str] = Field(default_factory=list, max_length=100)
 
 
 class SearchRequest(BaseModel):
