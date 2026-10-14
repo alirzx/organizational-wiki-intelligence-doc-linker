@@ -103,7 +103,7 @@ invalid identity, version, section containers, or non-string section bodies are
 rejected without coercion.
 
 Backend owners, status, publication/action state, hyperlink rebuild state, and
-timestamps remain non-semantic metadata. `owners` never becomes `acl_groups`;
+timestamps remain non-semantic metadata. `owners` remains Backend snapshot metadata;
 request visibility and ACL fields remain authoritative. Inline HTML/Markdown
 and bare base64 data-image URIs are removed before token counting or any RAG
 stage. Normal HTTP/HTTPS text links are retained.
