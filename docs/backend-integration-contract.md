@@ -2,7 +2,7 @@
 
 ## Responsibility split
 
-Backend owns `Document.id`, `WikiDocument.version_number`, editable content, publishing, immutable snapshot creation, user/ACL policy, and explicit delete calls. Stage 3 owns artifact verification, parsing, chunk identity, embeddings, Qdrant points, active search state, jobs, audits, retrieval/reranking, and terminal callbacks.
+Backend owns `Document.id`, `WikiDocument.version_number`, editable content, publishing, immutable snapshot creation, and explicit delete calls. Stage 3 owns artifact verification, parsing, chunk identity, embeddings, Qdrant points, active search state, jobs, audits, retrieval/reranking, and terminal callbacks.
 
 Backend does not send `WikiDocument.id` in the index request (it remains top-level `id` metadata inside the snapshot). Backend must not send chunks, chunk hashes, point IDs, dense/sparse vectors, MinIO credentials/endpoints, callback destinations, model settings, Redis/Qdrant configuration, or service credentials.
 
@@ -109,13 +109,13 @@ line, then body; stored and returned `text` remains body-only.
 
 Position, owners, status, source version, publication timestamp, actions,
 hyperlink-rebuild state, and timestamps remain namespaced metadata and are not
-embedded. Owners do not alter request `acl_groups`, and status/publication time
+embedded. Owners remain snapshot metadata, and status/publication time
 do not create a second Stage-3 publication gate. Harmless future metadata is
 allowed and preserved; required identity/content fields remain strict.
 
 ## Search integration
 
-Backend passes authenticated-user filters on every `POST /api/v1/search`. Stage 3 always applies organization/wiki and `version_state=active`, performs BGE-M3 dense+sparse RRF retrieval, reranks, and returns only active chunks.
+Backend may pass document/tag/language/visibility filters on `POST /api/v1/search`. Stage 3 always applies organization/wiki and `version_state=active`, performs BGE-M3 dense+sparse RRF retrieval, reranks, and returns only active chunks.
 
 Frontends should prefer `content_id`, `content_type`, `content_title`, and `content_order`. Optional `section_*`, pages, source blocks, confidence, and classifier values exist only for legacy points and may be null/empty.
 
