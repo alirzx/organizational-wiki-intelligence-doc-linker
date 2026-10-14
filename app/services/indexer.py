@@ -163,7 +163,7 @@ class IndexingService:
                 document_version=request.document_version, title=request.document.title,
                 source_filename=request.document.source_filename, language=request.document.language,
                 tags=tuple(request.document.tags), visibility=request.document.visibility,
-                acl_groups=tuple(request.document.acl_groups), artifact_bucket=snapshot.bucket,
+                artifact_bucket=snapshot.bucket,
                 artifact_key=snapshot.object_key, artifact_sha256=snapshot.sha256 or "",
                 artifact_etag=snapshot.etag, extra_metadata=request.document.extra,
             )
