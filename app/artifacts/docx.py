@@ -51,7 +51,7 @@ class DocxAdapter(ArtifactAdapter):
         return CanonicalDocument(
             document_id=context.document_id, organization_id=context.organization_id, wiki_id=context.wiki_id,
             document_version=context.document_version, title=context.title, source_filename=context.source_filename,
-            language=context.language, tags=context.tags, visibility=context.visibility, acl_groups=context.acl_groups,
+            language=context.language, tags=context.tags, visibility=context.visibility,
             artifact_bucket=context.artifact_bucket, artifact_key=context.artifact_key,
             artifact_sha256=context.artifact_sha256, artifact_etag=context.artifact_etag,
             source_kind="legacy_stage2", contents=tuple(sections), source_metadata={},
