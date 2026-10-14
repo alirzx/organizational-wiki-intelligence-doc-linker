@@ -30,7 +30,6 @@ def _chunk(
         language="fa",
         tags=("policy",),
         visibility="internal",
-        acl_groups=("security",),
         artifact_bucket="media",
         artifact_key=f"documents/doc-1/versions/v{version}/document.json",
         artifact_sha256=("a" if version == "1" else "b") * 64,
