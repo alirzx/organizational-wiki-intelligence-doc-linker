@@ -10,7 +10,11 @@ class Embedder:
 
 
 class Reranker:
+    def __init__(self):
+        self.passages = []
+
     def score(self, _query, passages):
+        self.passages = list(passages)
         return [0.9 for _ in passages]
 
 
@@ -25,12 +29,18 @@ class Vector:
         return [RetrievedPoint("point-1", 0.5, self.payload)]
 
 
-def _search(payload):
+def _search_with_service(payload):
     settings = Settings(_env_file=None, qdrant_vector_size=1)
-    service = RetrievalService(settings, Embedder(), Reranker(), Vector(payload))
-    return service.search(SearchRequest(
+    reranker = Reranker()
+    service = RetrievalService(settings, Embedder(), reranker, Vector(payload))
+    response = service.search(SearchRequest(
         query="policy", organization_id="org-1", wiki_id="wiki-1"
-    )).results[0]
+    ))
+    return response.results[0], reranker
+
+
+def _search(payload):
+    return _search_with_service(payload)[0]
 
 
 def _payload():
@@ -58,6 +68,14 @@ def test_published_search_result_preserves_null_legacy_section_fields():
     assert result.section_id is None
     assert result.section_title is None
     assert result.section_order is None
+
+
+def test_reranker_gets_title_aware_passage_but_result_text_remains_body_only():
+    result, reranker = _search_with_service(_payload())
+    assert reranker.passages == ["Published content\n\nPublished paragraph"]
+    assert result.content_title == "Published content"
+    assert result.text == "Published paragraph"
+    assert not result.text.startswith(result.content_title)
 
 
 def test_legacy_search_result_preserves_real_section_fields():

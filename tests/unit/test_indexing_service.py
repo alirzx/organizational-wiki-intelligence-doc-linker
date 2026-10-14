@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import Settings
+from app.core.ids import sha256_text
 from app.models.embedding import MockEmbeddingService
 from app.services.indexer import IndexingService
 from app.storage.minio_store import ObjectSnapshot
@@ -71,16 +72,20 @@ class FakeStorage:
         self.expected_etag = expected_etag
         data = json.dumps(
             {
-                "document_id": "64",
-                "document_version": 2,
-                "content": [
-                    {
-                        "id": "stable-content-id",
-                        "type": "section",
-                        "title": "Policy",
-                        "text": "Published policy text for semantic indexing.",
-                    }
-                ],
+                "id": 58,
+                "title": "Published Security Policy",
+                "content": {
+                    "sections": {
+                        "Policy": (
+                            "Published policy before "
+                            '<img src="data:image/png;base64,AAAA" /> '
+                            "after https://example.com/policy."
+                        )
+                    },
+                    "source_document_id": 64,
+                },
+                "version_number": 2,
+                "source_document": 64,
             }
         ).encode()
         return data, ObjectSnapshot(bucket, object_key, expected_etag, len(data), "a" * 64)
@@ -100,6 +105,7 @@ class FakeVector:
         self.index_revisions = []
         self.activation_calls = 0
         self.chunk_count = 0
+        self.embedded = []
 
     def ensure_collection(self):
         pass
@@ -111,6 +117,7 @@ class FakeVector:
         self.upsert_states.append(self.upsert_state)
         self.index_revisions.append({chunk.chunk.index_revision for chunk in chunks})
         self.chunk_count = len(chunks)
+        self.embedded = chunks
 
     def get_active_state(self, *_args):
         if self.active is None:
@@ -154,7 +161,24 @@ class FakeCallbacks:
         return self.delivered, None if self.delivered else "callback unavailable"
 
 
-def service(*, vector=None, callbacks=None, jobs=None, storage=None):
+class RecordingEmbeddingService(MockEmbeddingService):
+    def __init__(self, settings):
+        super().__init__(settings)
+        self.document_batches = []
+
+    def encode_documents(self, texts):
+        self.document_batches.append(list(texts))
+        return super().encode_documents(texts)
+
+
+def service(
+    *,
+    vector=None,
+    callbacks=None,
+    jobs=None,
+    storage=None,
+    embedder_type=MockEmbeddingService,
+):
     settings = Settings(
         _env_file=None,
         embedding_backend="mock",
@@ -168,15 +192,16 @@ def service(*, vector=None, callbacks=None, jobs=None, storage=None):
     storage = storage or FakeStorage()
     vector = vector or FakeVector()
     callbacks = callbacks or FakeCallbacks()
+    indexer = IndexingService(
+        settings,
+        jobs,
+        storage,
+        vector,
+        embedder_type(settings),
+        callbacks,
+    )
     return (
-        IndexingService(
-            settings,
-            jobs,
-            storage,
-            vector,
-            MockEmbeddingService(settings),
-            callbacks,
-        ),
+        indexer,
         jobs,
         storage,
         vector,
@@ -218,6 +243,36 @@ def test_indexing_lifecycle_verifies_before_activation_and_emits_correlated_call
         if key.endswith("index-manifest.json")
     )
     assert manifest["index-revision"] == "job-1"
+
+
+def test_embedding_uses_sanitized_title_aware_passage_while_storage_keeps_body():
+    indexer, _jobs, storage, vector, _callbacks = service(
+        embedder_type=RecordingEmbeddingService
+    )
+    indexer.process("job-1")
+
+    passage = "Policy\n\nPublished policy before after https://example.com/policy."
+    assert indexer.embedder.document_batches == [[passage]]
+    stored = vector.embedded[0].chunk
+    assert stored.content_title == "Policy"
+    assert stored.content_id is None
+    assert stored.text == "Published policy before after https://example.com/policy."
+    assert not stored.text.startswith("Policy")
+    assert stored.source_metadata == {"section_key": "Policy"}
+    assert stored.content_hash == sha256_text(stored.text)
+    assert stored.content_hash != sha256_text(passage)
+    assert vector.embedded[0].dense == indexer.embedder._dense(passage)
+    expected_sparse_indices, expected_sparse_values = indexer.embedder._sparse(passage)
+    assert vector.embedded[0].sparse_indices == expected_sparse_indices
+    assert vector.embedded[0].sparse_values == expected_sparse_values
+
+    chunks_audit = next(
+        data for _bucket, key, data in storage.uploads if key.endswith("chunks.json")
+    )
+    serialized = json.dumps(chunks_audit).casefold()
+    assert "data:image" not in serialized
+    assert ";base64," not in serialized
+    assert "<img" not in serialized
 
 
 @pytest.mark.parametrize("failure", ["upsert", "verify"])

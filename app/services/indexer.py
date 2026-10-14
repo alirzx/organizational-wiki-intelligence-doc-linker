@@ -9,7 +9,7 @@ from app.artifacts.base import AdapterContext
 from app.artifacts.factory import ArtifactAdapterFactory
 from app.chunking.semantic import SemanticChunker
 from app.core.config import Settings
-from app.models.domain import EmbeddedChunk
+from app.models.domain import EmbeddedChunk, compose_semantic_passage
 from app.models.embedding import EmbeddingService
 from app.services.callbacks import CallbackClient
 from app.services.job_store import JobStore, utc_now
@@ -181,7 +181,14 @@ class IndexingService:
 
             self.jobs.update(job_id, status="embedding", chunk_count=len(chunks))
             phase = time.perf_counter()
-            embeddings = self.embedder.encode_documents([item.text for item in chunks])
+            passages = [
+                compose_semantic_passage(
+                    content_title=item.content_title,
+                    body=item.text,
+                )
+                for item in chunks
+            ]
+            embeddings = self.embedder.encode_documents(passages)
             if len(embeddings.dense) != len(chunks):
                 raise RuntimeError("Embedding count does not match chunk count")
             embedded = []

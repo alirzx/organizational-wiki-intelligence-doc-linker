@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
-
 from app.core.config import get_settings
 
 
 def _download(model_id: str, cache_dir: str) -> None:
+    from huggingface_hub import snapshot_download
+
     print(f"Caching model: {model_id}")
     snapshot_download(repo_id=model_id, cache_dir=cache_dir)
 

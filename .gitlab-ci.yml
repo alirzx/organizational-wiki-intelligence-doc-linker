@@ -9,7 +9,7 @@ deploy-stage:
   script:
     - echo "$STAGE_SSH_USER"
     - sshpass -p "$STAGE_SSH_PASSWORD" scp -P "$STAGE_PORT" "$STAGE_ENV_FILE" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS:/opt/apps/organizational-wiki/ai-doc/.env"
-    - sshpass -p "$STAGE_SSH_PASSWORD" ssh -p "$STAGE_PORT" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS" "cd /opt/apps/organizational-wiki/ai-doc && git pull origin stage && docker compose up --build -d"
+    - sshpass -p "$STAGE_SSH_PASSWORD" ssh -p "$STAGE_PORT" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS" "cd /opt/apps/organizational-wiki/ai-doc && git pull --ff-only origin stage && COMPOSE_PROFILES=cpu docker compose config --quiet && COMPOSE_PROFILES=cpu docker compose up --build -d"
   only:
     - stage
   tags:
@@ -30,7 +30,7 @@ deploy:
   script:
     - echo $SSH_USER
     - scp -P "$SSH_PORT" "$ENV_FILE" "$SSH_USER@$VM_IPADDRESS:/opt/apps/organizational-wiki/ai-doc/.env"
-    - ssh $SSH_USER@$VM_IPADDRESS -p ${SSH_PORT} "cd /opt/apps/organizational-wiki/ai-doc && git pull origin master && docker compose up --build -d"
+    - ssh $SSH_USER@$VM_IPADDRESS -p ${SSH_PORT} "cd /opt/apps/organizational-wiki/ai-doc && git pull --ff-only origin master && COMPOSE_PROFILES=gpu docker compose config --quiet && COMPOSE_PROFILES=gpu docker compose up --build -d"
   rules:
     - if: '$CI_COMMIT_BRANCH == "master"'
       when: manual

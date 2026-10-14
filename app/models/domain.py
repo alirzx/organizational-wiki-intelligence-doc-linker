@@ -3,6 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+MAX_SEMANTIC_TITLE_CHARS = 512
+
+
+def compose_semantic_passage(*, content_title: object, body: object) -> str:
+    """Build the shared title-aware input used for embedding and reranking.
+
+    The canonical body remains separate in Qdrant and search responses. The
+    bounded title prefix supplies section structure only to the model-facing
+    representation.
+    """
+
+    title = str(content_title or "").strip()[:MAX_SEMANTIC_TITLE_CHARS]
+    text = str(body or "").strip()
+    if title and text:
+        return f"{title}\n\n{text}"
+    return text or title
+
 
 @dataclass(frozen=True)
 class CanonicalContent:

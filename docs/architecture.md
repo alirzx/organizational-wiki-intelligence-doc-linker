@@ -13,8 +13,10 @@ POST /api/v1/documents/index-ready
   -> MinIOStore.download_verified: accepted ETag + optional SHA256 + mutation check
   -> ArtifactAdapterFactory
   -> PublishedDocumentAdapter
+  -> strict identity cross-check + inline data-image sanitization
   -> CanonicalDocument / CanonicalContent
   -> SemanticChunker
+  -> shared title + body semantic passage
   -> BGE-M3 document embedding (1024 dense + learned sparse)
   -> QdrantStore.upsert(shadow index_revision, version_state=inactive)
   -> delete_obsolete_points(same candidate revision only)
@@ -54,6 +56,7 @@ POST /api/v1/search
        + Backend document/tag/language/visibility/ACL filters
   -> dense/sparse prefetch + RRF
   -> candidate pool (default 40)
+  -> shared title + body semantic passage
   -> BGE-reranker-v2-m3
   -> SearchResult with generic published-content references
 ```
@@ -66,14 +69,14 @@ The primary adapter emits generic source concepts:
 
 ```text
 source_kind=published_snapshot
-content_id (optional stable Backend/editor ID)
-content_type
-content_title
-content_order
-source_metadata
+content_id=null
+content_type=section
+content_title=content.sections map key
+content_order=serialized map order (1..N)
+source_metadata.section_key=original map key
 ```
 
-When a stable ID exists it participates in deterministic point identity and is returned unchanged. When it does not exist, Stage 3 does not fabricate a public source ID; deterministic point identity falls back internally to content type/order/hash. Optional legacy Stage-2 page, block, classifier, and section metadata remains in the payload only when an old adapter actually supplies it.
+The production Backend snapshot provides no section ID, so Stage 3 does not fabricate one; deterministic point identity falls back internally to content type/order/body hash. Optional legacy Stage-2 page, block, classifier, stable-ID, and section metadata remains in the payload only when an old adapter actually supplies it. The section title prefixes the model-facing passage for embedding and reranking, but stored `text`, `content_hash`, and `SearchResult.text` remain body-only.
 
 ## Storage ownership
 
@@ -88,7 +91,22 @@ Explicit `DELETE /api/v1/documents/{document_id}` may delete all indexed Qdrant 
 
 ## Published snapshot schema boundary
 
-No Backend serializer or fixture for `document.json` exists in this repository or the available neighboring Stage-2 project. Until the Backend schema is supplied, all tolerance is confined to `PublishedDocumentAdapter`: an object (optionally under `document`) with ordered `content`, `contents`, `sections`, or `blocks`; a text `content` is also accepted. Items may provide `id`/content/section/block/node IDs, type, title, order, text, metadata/attrs, or nested editor text nodes. This temporary compatibility surface must be replaced or narrowed when the authoritative serializer is available; no guessed fields leak into Qdrant lifecycle code.
+The production schema is explicit. Top-level `source_document` and
+`content.source_document_id` are both Backend `Document.id` and must match the
+request `document_id`. `version_number` must match `document_version`.
+Top-level `id` is `WikiDocument.id` metadata and is never used as Stage-3
+identity. `content.sections` is an insertion-ordered string-to-string map; each
+entry becomes one `CanonicalContent` before chunk splitting. Snapshot title is
+canonical when non-empty, with the request title as fallback. Unknown harmless
+metadata is allowed and preserved under `document_metadata.backend_snapshot`;
+invalid identity, version, section containers, or non-string section bodies are
+rejected without coercion.
+
+Backend owners, status, publication/action state, hyperlink rebuild state, and
+timestamps remain non-semantic metadata. `owners` never becomes `acl_groups`;
+request visibility and ACL fields remain authoritative. Inline HTML/Markdown
+and bare base64 data-image URIs are removed before token counting or any RAG
+stage. Normal HTTP/HTTPS text links are retained.
 
 ## Security boundaries
 

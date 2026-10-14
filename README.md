@@ -17,6 +17,14 @@ documents/{document_id}/versions/v{document_version}/document.json
 
 Stage 3 never writes, mutates, or deletes objects under `documents/{document_id}/versions/`. Legacy Stage-2 JSON/DOCX/Markdown adapters remain in the codebase for migration/tests, but the public indexing contract does not route to them.
 
+The published snapshot uses Backend `Document.id` in both `source_document` and
+`content.source_document_id`; top-level `id` is only the internal
+`WikiDocument.id`. `version_number` is the Stage-3 `document_version`, and the
+ordered `content.sections` map is the knowledge body. Stage 3 strips inline
+HTML, Markdown, and bare `data:image/...;base64,...` content before chunking.
+Each section title is included in the model-facing embedding/reranking passage,
+while Qdrant and search responses keep the clean body and title separate.
+
 Each indexing job also has an internal `index_revision` equal to its durable `job_id`. This value is not part of the Backend identity or request contract. It lets Stage 3 build a shadow revision when the same published version is indexed again.
 
 ## Index lifecycle
@@ -26,9 +34,10 @@ Indexing is asynchronous and idempotent:
 ```text
 stat + capture accepted ETag
 -> download and verify the accepted ETag/SHA256
--> parse published snapshot
+-> validate identities and parse the confirmed Backend snapshot
+-> remove inline data-image payloads
 -> semantic chunking
--> BGE-M3 dense + learned sparse embeddings
+-> title-aware BGE-M3 dense + learned sparse embeddings
 -> upsert candidate (document_version, index_revision) as version_state=inactive
 -> remove obsolete chunks only in that candidate revision
 -> verify the candidate revision point count

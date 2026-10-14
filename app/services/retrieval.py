@@ -4,6 +4,7 @@ import time
 
 from app.api.schemas import SearchRequest, SearchResponse, SearchResult
 from app.core.config import Settings
+from app.models.domain import compose_semantic_passage
 from app.models.embedding import EmbeddingService
 from app.models.reranker import Reranker
 from app.vector.qdrant_store import QdrantStore
@@ -36,7 +37,17 @@ class RetrievalService:
         retrieval_seconds = time.perf_counter() - phase
 
         phase = time.perf_counter()
-        passages = [str(item.payload.get("text") or "") for item in candidates]
+        passages = [
+            compose_semantic_passage(
+                content_title=(
+                    item.payload.get("content_title")
+                    or item.payload.get("section_title")
+                    or ""
+                ),
+                body=item.payload.get("text") or "",
+            )
+            for item in candidates
+        ]
         rerank_scores = self.reranker.score(request.query, passages) if candidates else []
         rerank_seconds = time.perf_counter() - phase
 

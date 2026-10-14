@@ -138,6 +138,11 @@ The `stage` branch deploys the CPU profile for integration testing. The `master`
 
 The repository includes `.gitlab-ci.yml`; deployments must supply the environment file, preserve the external `wikio` services, validate `docker compose config`, and use fast-forward-only pulls where the deployment environment permits.
 
-## Published schema rollout requirement
+## Published schema readiness
 
-The authoritative Backend `document.json` serializer/fixture is not present in this checkout. Before production rollout, exchange a real immutable snapshot fixture with Backend and narrow/confirm `PublishedDocumentAdapter`. Stage 3 deliberately does not manufacture page, OCR, paragraph, classifier, or Template Maker provenance that is absent from the published file.
+The confirmed Backend snapshot contract is implemented and covered by a compact
+production-shape fixture. Deployment requests must use Backend `Document.id` in
+the path/request and in both snapshot source-document fields; top-level
+`WikiDocument.id` is metadata only. Stage 3 strips inline base64 data images and
+deliberately does not manufacture section IDs, page/OCR/classifier fields, or
+Template Maker provenance absent from the published file.

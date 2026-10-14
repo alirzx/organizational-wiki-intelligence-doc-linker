@@ -53,6 +53,49 @@ Stage 3 uses the resulting `job_id` as an internal `index_revision`. Backend doe
 
 `replace_existing=true` means activate this verified version and deactivate the prior active search version. It never deletes a historical Qdrant version or any MinIO snapshot.
 
+## Immutable `document.json`
+
+The authoritative snapshot shape is:
+
+```json
+{
+  "id": 58,
+  "title": "یک سند تستی",
+  "content": {
+    "sections": {
+      "جایگاه اول": "متن بخش اول",
+      "جایگاه دوم": "متن بخش دوم"
+    },
+    "source_document_id": 270
+  },
+  "position": "جایگاه اول",
+  "owners": [1, 2],
+  "status": "published",
+  "version_number": 1,
+  "source_document": 270,
+  "source_version": null,
+  "published_at": "2026-10-14T00:00:00Z",
+  "available_actions": {},
+  "hyperlink_rebuild": {},
+  "created_at": "2026-10-05T12:10:45.703546Z",
+  "updated_at": "2026-10-14T00:00:00Z"
+}
+```
+
+For this example, request identity is `document_id="270"` and
+`document_version="1"`; `id=58` is `WikiDocument.id` metadata only. Both source
+document fields and the numeric version are required and cross-validated. The
+sections map retains serialized order. Each non-empty cleaned string becomes a
+`section` with a null `content_id`, the map key as `content_title`, and the key
+also in `source_metadata.section_key`. Stage 3 does not invent section IDs.
+
+Top-level operational fields are preserved as non-semantic
+`backend_snapshot` metadata. `owners` is not an ACL source. Snapshot
+`status`/`published_at` do not gate indexing because the authenticated
+`index-ready` call is the trigger. Data-image HTML, Markdown, and bare base64
+URIs are stripped before tokenization, chunking, embedding, audit, Qdrant, and
+reranking; ordinary HTTP/HTTPS links remain.
+
 ## GET /jobs/{job_id}
 
 Index jobs expose `job_id`, `document_id`, and `document_version` at top level. Status proceeds through:
@@ -74,11 +117,11 @@ Published results expose generic references:
 {
   "document_id": "64",
   "document_version": "2",
-  "content_id": "stable-backend-id-or-null",
+  "content_id": null,
   "content_type": "section",
   "content_title": "Access policy",
   "content_order": 4,
-  "source_metadata": {},
+  "source_metadata": {"section_key": "Access policy"},
   "chunk_index": 1,
   "artifact_key": "documents/64/versions/v2/document.json",
   "content_hash": "..."

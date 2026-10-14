@@ -4,7 +4,7 @@
 
 Backend owns `Document.id`, `WikiDocument.version_number`, editable content, publishing, immutable snapshot creation, user/ACL policy, and explicit delete calls. Stage 3 owns artifact verification, parsing, chunk identity, embeddings, Qdrant points, active search state, jobs, audits, retrieval/reranking, and terminal callbacks.
 
-Backend must not send `WikiDocument.id`, chunks, chunk hashes, point IDs, dense/sparse vectors, MinIO credentials/endpoints, callback destinations, model settings, Redis/Qdrant configuration, or service credentials.
+Backend does not send `WikiDocument.id` in the index request (it remains top-level `id` metadata inside the snapshot). Backend must not send chunks, chunk hashes, point IDs, dense/sparse vectors, MinIO credentials/endpoints, callback destinations, model settings, Redis/Qdrant configuration, or service credentials.
 
 ## Publication handoff
 
@@ -64,30 +64,54 @@ The response includes job/document/version correlation. Backend can poll `GET /a
 
 Backend callback ordering is therefore not responsible for protecting Qdrant search state; Stage 3 enforces the guard before callback delivery.
 
-## Published `document.json` schema status
+## Published `document.json` schema
 
-The authoritative Backend serializer is not included with this repository. The temporary tested shape is:
+The confirmed production shape is:
 
 ```json
 {
-  "document_id": "64",
-  "document_version": 2,
-  "title": "Security Policy",
-  "metadata": {},
-  "content": [
-    {
-      "id": "stable-editor-or-backend-id",
-      "type": "section",
-      "title": "Access policy",
-      "order": 1,
-      "text": "Ordered published text.",
-      "metadata": {}
-    }
-  ]
+  "id": 58,
+  "title": "یک سند تستی",
+  "content": {
+    "sections": {
+      "جایگاه اول": "متن بخش اول",
+      "جایگاه سوم": "متن بخش بعدی"
+    },
+    "source_document_id": 270
+  },
+  "position": "جایگاه اول",
+  "owners": [1, 2],
+  "status": "pending_publication",
+  "version_number": 1,
+  "source_document": 270,
+  "source_version": null,
+  "published_at": null,
+  "available_actions": {},
+  "hyperlink_rebuild": {},
+  "created_at": "2026-10-05T12:10:45.703546Z",
+  "updated_at": "2026-10-06T06:20:40.178653Z"
 }
 ```
 
-Only ordered text is mandatory. Identity fields inside the file are optional but, when present, must match the request. Stable item IDs are preserved exactly. The adapter also isolates compatibility for `contents`, `sections`, `blocks`, nested `document`, text-only content, and nested editor text nodes. Backend and Stage 3 should replace this temporary tolerance with a fixture from the real serializer before production rollout.
+`source_document=270` and `content.source_document_id=270` are Backend
+`Document.id` and both must match request `document_id="270"`.
+`version_number=1` must match `document_version="1"`. Top-level `id=58` is the
+internal `WikiDocument.id` and is metadata only. A non-empty snapshot title is
+canonical; request title is fallback only.
+
+`content.sections` is an ordered JSON map of section title to string body.
+Stage 3 preserves its serialized order, emits no fake section ID, skips an
+individually empty cleaned body, and rejects a snapshot with no usable sections.
+Non-string/nested section shapes are rejected. Data-image HTML, Markdown, and
+bare base64 URIs are removed before the RAG pipeline, while ordinary HTTP/HTTPS
+links remain. The shared embedding/reranking passage is `content_title`, a blank
+line, then body; stored and returned `text` remains body-only.
+
+Position, owners, status, source version, publication timestamp, actions,
+hyperlink-rebuild state, and timestamps remain namespaced metadata and are not
+embedded. Owners do not alter request `acl_groups`, and status/publication time
+do not create a second Stage-3 publication gate. Harmless future metadata is
+allowed and preserved; required identity/content fields remain strict.
 
 ## Search integration
 
