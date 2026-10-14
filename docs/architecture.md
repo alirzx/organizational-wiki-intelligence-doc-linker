@@ -53,7 +53,7 @@ POST /api/v1/search
   -> BGE-M3 query dense + sparse encoding
   -> Qdrant filter:
        organization_id + wiki_id + version_state=active
-       + Backend document/tag/language/visibility/ACL filters
+       + Backend document/tag/language/visibility filters
   -> dense/sparse prefetch + RRF
   -> candidate pool (default 40)
   -> shared title + body semantic passage
