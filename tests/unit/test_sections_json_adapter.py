@@ -8,7 +8,7 @@ def ctx():
     return AdapterContext(
         document_id="59", organization_id="org-1", wiki_id="wiki-main", document_version="1",
         title="Doc", source_filename="a.pdf", language="fa", tags=("policy",), visibility="internal",
-        acl_groups=("sec",), artifact_bucket="media",
+artifact_bucket="media",
         artifact_key="documents/59/Sectioning/ocr/sections.json", artifact_sha256="a" * 64, artifact_etag="e",
     )
 
