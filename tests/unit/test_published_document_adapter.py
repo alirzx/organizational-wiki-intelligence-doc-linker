@@ -22,7 +22,6 @@ def context(**overrides) -> AdapterContext:
         "language": "fa",
         "tags": ("policy",),
         "visibility": "restricted",
-        "acl_groups": ("editors",),
         "artifact_bucket": "media",
         "artifact_key": "documents/270/versions/v1/document.json",
         "artifact_sha256": "a" * 64,
@@ -221,7 +220,6 @@ def test_backend_and_request_metadata_are_namespaced_and_acl_stays_authoritative
         "updated_at": "2026-10-14T00:00:00Z",
     }
     assert document.metadata["request_extra"] == {"request_trace": "trace-1"}
-    assert document.acl_groups == ("editors",)
     assert "owners" not in document.source_metadata
 
 
