@@ -68,7 +68,6 @@ class PublishedDocumentAdapter(ArtifactAdapter):
             language=context.language,
             tags=context.tags,
             visibility=context.visibility,
-            acl_groups=context.acl_groups,
             artifact_bucket=context.artifact_bucket,
             artifact_key=context.artifact_key,
             artifact_sha256=context.artifact_sha256,
