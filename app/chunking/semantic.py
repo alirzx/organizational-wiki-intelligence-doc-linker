@@ -176,7 +176,7 @@ class SemanticChunker:
                     document_version=document.document_version, index_revision=index_revision,
                     document_title=document.title,
                     source_filename=document.source_filename, language=document.language,
-                    tags=document.tags, visibility=document.visibility, acl_groups=document.acl_groups,
+                    tags=document.tags, visibility=document.visibility,
                     artifact_bucket=document.artifact_bucket, artifact_key=document.artifact_key,
                     artifact_sha256=document.artifact_sha256, artifact_etag=document.artifact_etag,
                     source_kind=document.source_kind, content_id=content.content_id,
