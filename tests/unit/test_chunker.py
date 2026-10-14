@@ -7,7 +7,7 @@ from app.models.embedding import MockEmbeddingService
 def build_doc(text, *, content_id="content-001", source_metadata=None):
     return CanonicalDocument(
         document_id="d1", organization_id="o1", wiki_id="w1", document_version="1", title="Doc",
-        source_filename="x.pdf", language="fa", tags=(), visibility="internal", acl_groups=(),
+        source_filename="x.pdf", language="fa", tags=(), visibility="internal",
         artifact_bucket="media", artifact_key="documents/d1/Sectioning/ocr/sections.json",
         artifact_sha256="d" * 64, artifact_etag=None, source_kind="published_snapshot",
         contents=(CanonicalContent(
