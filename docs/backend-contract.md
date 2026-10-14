@@ -24,7 +24,6 @@ Base path: `/api/v1`. `document_id` is Backend `Document.id`; `document_version`
     "language": "fa",
     "tags": ["policy"],
     "visibility": "internal",
-    "acl_groups": ["security-team"],
     "extra": {}
   },
   "replace_existing": true
