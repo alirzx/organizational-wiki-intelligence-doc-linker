@@ -101,7 +101,6 @@ class QdrantStore:
             "language": models.PayloadSchemaType.KEYWORD,
             "tags": models.PayloadSchemaType.KEYWORD,
             "visibility": models.PayloadSchemaType.KEYWORD,
-            "acl_groups": models.PayloadSchemaType.KEYWORD,
             "artifact_sha256": models.PayloadSchemaType.KEYWORD,
         }
         for field_name, field_schema in indexed.items():
@@ -642,8 +641,6 @@ class QdrantStore:
             must.append(self._match("language", filters.language))
         if filters.visibility:
             must.append(models.FieldCondition(key="visibility", match=models.MatchAny(any=filters.visibility)))
-        if filters.acl_groups:
-            must.append(models.FieldCondition(key="acl_groups", match=models.MatchAny(any=filters.acl_groups)))
         return models.Filter(must=must)
 
     def search(
