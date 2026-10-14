@@ -16,7 +16,7 @@ def test_docx_heading_sections():
     d.save(buf)
     ctx = AdapterContext(
         document_id="1", organization_id="o", wiki_id="w", document_version="1", title="D",
-        source_filename="x.docx", language="fa", tags=(), visibility="internal", acl_groups=(),
+        source_filename="x.docx", language="fa", tags=(), visibility="internal",
         artifact_bucket="media", artifact_key="documents/1/Sectioning/ocr/sections.docx",
         artifact_sha256="c" * 64, artifact_etag=None,
     )
