@@ -49,7 +49,7 @@ stat + capture accepted ETag
 
 Historical published versions remain in Qdrant. For example, after publishing v1, v2, and v3, v1/v2 are `inactive` and preserved while one internal revision of v3 is `active`. A failed v3 leaves v2 active, and a failed shadow re-index of active v3 leaves the prior v3 revision searchable. A delayed v1/v2 worker cannot downgrade active v3. `replace_existing=true` changes active search state after verification; it never means deleting historical MinIO or Qdrant versions.
 
-Normal search always filters `version_state=active`, then applies tenant and Backend-supplied document/tag/language/visibility/ACL filters. The RAG core remains BGE-M3 (1024 dense dimensions plus sparse lexical weights), Qdrant hybrid retrieval with RRF, and `BAAI/bge-reranker-v2-m3`.
+Normal search always filters `version_state=active`, then applies tenant and Backend-supplied document/tag/language/visibility filters. The RAG core remains BGE-M3 (1024 dense dimensions plus sparse lexical weights), Qdrant hybrid retrieval with RRF, and `BAAI/bge-reranker-v2-m3`.
 
 ## API
 
