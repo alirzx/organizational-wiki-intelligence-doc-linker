@@ -18,7 +18,6 @@ class AdapterContext:
     language: str | None
     tags: tuple[str, ...]
     visibility: str
-    acl_groups: tuple[str, ...]
     artifact_bucket: str
     artifact_key: str
     artifact_sha256: str
